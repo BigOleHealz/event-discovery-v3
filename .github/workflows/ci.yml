@@ -68,6 +68,15 @@ jobs:
       - name: Verify Compose service health
         run: bash tests/phase1-compose.sh
 
+  airflow-health:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify Airflow and ingestion schema
+        run: bash tests/phase2a-compose.sh
+
   e2e:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

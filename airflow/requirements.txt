@@ -1,0 +1,2 @@
+apache-airflow-providers-postgres>=7,<8
+psycopg[binary]>=3.2,<4
