@@ -10,8 +10,8 @@ the required delivery workflow.
 
 ## Status
 
-Phase 1 is in progress. The PostGIS, FastAPI, and React service skeletons run through
-Docker Compose with health checks.
+Phase 1 provides a containerized PostGIS database, FastAPI GeoJSON endpoint, and an
+installable React map PWA backed by 20 seeded Philadelphia events.
 
 ## Repository layout
 
@@ -50,3 +50,15 @@ Run the Phase 1 container integration check without occupying the default host p
 ```bash
 bash tests/phase1-compose.sh
 ```
+
+Run the complete browser acceptance flow (real containers and database, deterministic
+Google Maps transport fixture, installability checks, and an offline reload):
+
+```bash
+npx --prefix web playwright install chromium
+bash tests/phase1-e2e.sh
+```
+
+Chrome removed Lighthouse's standalone PWA score in 2025. The browser flow therefore
+uses Chromium's current installability diagnostics directly and verifies the manifest,
+physical icon dimensions, service-worker control, precached shell, and offline reload.
