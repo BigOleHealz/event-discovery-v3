@@ -28,3 +28,16 @@ web_address=$(docker compose --env-file "$env_file" --file "$compose_file" port 
 api_status=$(curl --fail --silent "http://${api_address}/health")
 test "$api_status" = '{"status":"ok"}'
 curl --fail --silent --output /dev/null "http://${web_address}/"
+
+venue_count=$(
+  docker compose --env-file "$env_file" --file "$compose_file" exec --no-TTY postgres \
+    psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --tuples-only --no-align \
+    --command "SELECT count(*) FROM venue"
+)
+event_count=$(
+  docker compose --env-file "$env_file" --file "$compose_file" exec --no-TTY postgres \
+    psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --tuples-only --no-align \
+    --command "SELECT count(*) FROM canonical_event"
+)
+test "$venue_count" = "12"
+test "$event_count" = "20"

@@ -26,6 +26,7 @@ services:
       API_HOST: ${API_HOST}
       API_PORT: ${API_PORT}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
+      SEED_DATABASE: ${SEED_DATABASE}
     command:
       - uvicorn
       - app.main:app

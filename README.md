@@ -40,8 +40,8 @@ The initial endpoints are:
 - Web: `http://127.0.0.1:3000`
 - API health: `http://127.0.0.1:8000/health`
 
-Run the Phase 1a container integration check without occupying the default host ports:
+Run the Phase 1 container integration check without occupying the default host ports:
 
 ```bash
-bash tests/phase1a-health.sh
+bash tests/phase1-compose.sh
 ```
