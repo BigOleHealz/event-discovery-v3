@@ -10,7 +10,8 @@ the required delivery workflow.
 
 ## Status
 
-Repository scaffold only. No application phase has been implemented yet.
+Phase 1 is in progress. The PostGIS, FastAPI, and React service skeletons run through
+Docker Compose with health checks.
 
 ## Repository layout
 
@@ -24,5 +25,23 @@ Repository scaffold only. No application phase has been implemented yet.
 
 ## Development
 
-Read `PROJECT_PLAN.md` and `CONTRIBUTING.md` before starting a sub-phase. Local setup and
-run commands will be added with Phase 1a as the first runnable services are introduced.
+Read `PROJECT_PLAN.md` and `CONTRIBUTING.md` before starting a sub-phase.
+
+Copy the local environment template, add a browser-restricted Google Maps API key when map
+work lands, then start the stack:
+
+```bash
+cp .env.example .env
+docker compose up --build --wait
+```
+
+The initial endpoints are:
+
+- Web: `http://127.0.0.1:3000`
+- API health: `http://127.0.0.1:8000/health`
+
+Run the Phase 1a container integration check without occupying the default host ports:
+
+```bash
+bash tests/phase1a-health.sh
+```
