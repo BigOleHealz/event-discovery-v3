@@ -623,8 +623,10 @@ Installable from the browser on desktop and mobile — no app store, one codebas
   screen" affordance after the second visit, never on first load
 - **iOS caveats** — Safari only allows Web Push for installed PWAs, so the push opt-in in
   Phase 7e must detect `display-mode: standalone` and prompt the user to install first
-- **Runtime caching** — network-first for event data, cache-first for tiles and static
-  assets, with a versioned cache name so deploys invalidate cleanly
+- **Runtime caching** — network-first for event data and cache-first for first-party static
+  assets, with a versioned cache name so deploys invalidate cleanly. Do not prefetch or
+  persist Google Maps tiles or other Google Maps Platform content; leave that content to
+  Google's own client and HTTP caching behaviour.
 
 ---
 
@@ -679,8 +681,8 @@ containers, not mocks — wherever the dependency is cheap to run.
 | API | `pytest` + `httpx.AsyncClient` | Every endpoint: params, auth, pagination, error shapes |
 | DAG | `pytest` + Airflow test harness | Task wiring, retries, `ingest.run` lifecycle |
 | Frontend unit | `vitest` + Testing Library | Sidebar filters, URL param sync, detail panel |
-| E2E | `playwright` | Map loads, filter changes results, sign-in, invite flow, PWA install |
-| Migrations | `alembic` upgrade/downgrade | Every revision applies and reverses on a clean DB |
+| E2E | `playwright` | Map loads, filter changes results, sign-in, invite flow, current Chromium PWA installability diagnostics |
+| Migrations | `alembic` upgrade/downgrade | Every revision applies and removes its application-owned objects on a clean DB |
 
 ### Rules that matter
 
@@ -703,7 +705,11 @@ containers, not mocks — wherever the dependency is cheap to run.
 - **Idempotency.** Every DAG task runs twice in a test and asserts the second run produces no
   duplicate rows. Ingestion is inherently re-run.
 - **Service worker.** Playwright asserts the manifest is served, the worker registers, the
-  shell loads with the network offline, and the stale-data banner appears.
+  declared icon files have the expected dimensions, Chromium reports no installability
+  errors, the shell loads with the network offline, and the stale-data banner appears.
+- **Migration ownership.** Downgrades remove tables, indexes, schemas, and other objects
+  created by the application revision. They do not remove PostGIS or related extensions
+  provisioned and shared by the database image.
 
 ### CI
 
@@ -769,15 +775,18 @@ sub-phase should leave the app broken.
 
 - **1a** — Compose file with `postgres` (PostGIS), `api`, `web`; health checks on all three;
   `.env.example` committed
-- **1b** — Postgres schema migrations (`canonical_event`, `venue`, `source_listing`) via
-  Alembic; seed script with ~20 hand-written Philly events
+- **1b** — Alembic migrations for the complete §3.1 schema in the dependency order shown
+  there; seed script with ~20 hand-written Philly events
 - **1c** — FastAPI `GET /api/events` returning seeded events as GeoJSON
 - **1d** — React app with a full-bleed Google Map rendering the seeded pins
 - **1e** — PWA shell: manifest, icon set, service worker precaching the app shell,
-  installable and passing a Lighthouse PWA audit
+  installable with no current Chromium installability errors; Playwright verifies the
+  manifest, icon dimensions, service worker control, and offline shell
 
 *Done when:* hardcoded events appear on a real map, all from containers, and the app
-installs to a phone home screen.
+installs to a phone home screen. The real-map check uses a browser-restricted Google Maps
+API key and a map ID from the same Google Cloud project. CI uses a deterministic Maps
+transport fixture; it does not replace the manual real-map and phone installation checks.
 
 ### Phase 2 — One source, end to end
 

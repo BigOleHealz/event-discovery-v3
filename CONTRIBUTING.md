@@ -32,9 +32,14 @@ later phase.
 
 ## Commits
 
-Make one commit per roadmap sub-phase (`1a`, `1b`, `1c`, and so on), not one commit per
-phase and not one commit per file. Tests and implementation for that sub-phase belong in
-the same commit.
+Do not create commits automatically while implementing work, even when a phase request
+includes instructions to commit or push. Treat that language as the intended eventual
+handoff, not authorization to commit. After showing the complete diff and test results,
+stop and wait for a separate, explicit instruction from the maintainer to commit.
+
+When the maintainer explicitly authorizes a commit, make one commit per roadmap sub-phase
+(`1a`, `1b`, `1c`, and so on), not one commit per phase and not one commit per file. Tests
+and implementation for that sub-phase belong in the same commit.
 
 Use Conventional Commits-style subjects, for example:
 
@@ -86,7 +91,8 @@ Before asking for a phase to be merged:
 1. Run the full test, lint, and type-check suite.
 2. Run `docker compose up` and verify the phase's exact **Done when** condition from the
    roadmap.
-3. Push the phase branch.
+3. Wait for the maintainer's separate authorization before creating commits, then push the
+   phase branch only when requested.
 4. Report what was built.
 5. Report decisions made where the plan was silent.
 6. Flag anything shaky or incomplete.
