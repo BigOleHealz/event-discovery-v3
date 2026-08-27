@@ -24,6 +24,7 @@ EXPECTED_TABLES = (
     "notification_log",
     "saved_search_hit",
 )
+EXPECTED_INGEST_TABLES = {"run", "page_fetch", "rejected_listing"}
 
 
 def migration_config(database_url: str) -> Config:
@@ -48,12 +49,27 @@ def table_names(engine: Engine) -> set[str]:
         return {str(row.tablename) for row in rows}
 
 
+def ingest_table_names(engine: Engine) -> set[str]:
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                """
+                SELECT tablename
+                FROM pg_catalog.pg_tables
+                WHERE schemaname = 'ingest'
+                """
+            )
+        )
+        return {str(row.tablename) for row in rows}
+
+
 def test_migrations_seed_and_constraints(database_url: str) -> None:
     config = migration_config(database_url)
     engine = sa.create_engine(database_url)
 
     command.upgrade(config, "head")
     assert table_names(engine) == set(EXPECTED_TABLES)
+    assert ingest_table_names(engine) == EXPECTED_INGEST_TABLES
 
     seed_database(engine)
     seed_database(engine)
@@ -102,6 +118,29 @@ def test_migrations_seed_and_constraints(database_url: str) -> None:
             {"id": uuid4()},
         )
 
+    missing_run_id = uuid4()
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO ingest.page_fetch (id, run_id, url)
+                VALUES (:id, :run_id, 'https://example.test/events')
+                """
+            ),
+            {"id": uuid4(), "run_id": missing_run_id},
+        )
+
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO ingest.rejected_listing (id, run_id, source, reason)
+                VALUES (:id, :run_id, 'fixture', 'malformed')
+                """
+            ),
+            {"id": uuid4(), "run_id": missing_run_id},
+        )
+
     user_id = uuid4()
     with engine.begin() as connection:
         connection.execute(
@@ -133,6 +172,7 @@ def test_migrations_seed_and_constraints(database_url: str) -> None:
 
     command.downgrade(config, "base")
     assert table_names(engine) == set()
+    assert ingest_table_names(engine) == set()
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM alembic_version")) == 0
 
