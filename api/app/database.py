@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
+from functools import lru_cache
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Connection, Engine, create_engine
 
 
 def database_url_from_env() -> str:
@@ -14,3 +16,13 @@ def database_url_from_env() -> str:
 
 def create_database_engine(database_url: str | None = None) -> Engine:
     return create_engine(database_url or database_url_from_env(), pool_pre_ping=True)
+
+
+@lru_cache(maxsize=1)
+def get_engine() -> Engine:
+    return create_database_engine()
+
+
+def get_connection() -> Iterator[Connection]:
+    with get_engine().connect() as connection:
+        yield connection

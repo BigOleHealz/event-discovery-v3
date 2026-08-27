@@ -27,6 +27,12 @@ web_address=$(docker compose --env-file "$env_file" --file "$compose_file" port 
 
 api_status=$(curl --fail --silent "http://${api_address}/health")
 test "$api_status" = '{"status":"ok"}'
+events_payload=$(curl --fail --silent "http://${api_address}/api/events")
+feature_count=$(
+  EVENTS_PAYLOAD="$events_payload" python3 -c \
+    'import json, os; payload = json.loads(os.environ["EVENTS_PAYLOAD"]); print(len(payload["features"]))'
+)
+test "$feature_count" = "20"
 curl --fail --silent --output /dev/null "http://${web_address}/"
 
 venue_count=$(

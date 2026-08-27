@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
 from uuid import uuid4
 
 import pytest
@@ -9,7 +8,6 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import Engine, text
 from sqlalchemy.exc import IntegrityError
-from testcontainers.community.postgres import PostgresContainer
 
 from app.seed import EVENTS, VENUES, seed_database
 
@@ -26,12 +24,6 @@ EXPECTED_TABLES = (
     "notification_log",
     "saved_search_hit",
 )
-
-
-@pytest.fixture(scope="module")
-def database_url() -> Iterator[str]:
-    with PostgresContainer("postgis/postgis:16-3.4", driver="psycopg") as postgres:
-        yield postgres.get_connection_url()
 
 
 def migration_config(database_url: str) -> Config:

@@ -39,6 +39,7 @@ The initial endpoints are:
 
 - Web: `http://127.0.0.1:3000`
 - API health: `http://127.0.0.1:8000/health`
+- Seeded events GeoJSON: `http://127.0.0.1:8000/api/events`
 
 Run the Phase 1 container integration check without occupying the default host ports:
 
