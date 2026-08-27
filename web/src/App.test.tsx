@@ -4,10 +4,10 @@ import { describe, expect, it } from "vitest";
 import { App } from "./App";
 
 describe("App", () => {
-  it("identifies the product while map work is pending", () => {
+  it("explains which required browser configuration is missing", () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "Event Discovery" })).toBeInTheDocument();
-    expect(screen.getByText("Philadelphia events are coming in Phase 1.")).toBeVisible();
+    expect(screen.getByText("VITE_API_BASE_URL is required")).toBeVisible();
   });
 });

@@ -35,6 +35,10 @@ cp .env.example .env
 docker compose up --build --wait
 ```
 
+For the map, enable the Google Maps JavaScript API, set `GOOGLE_MAPS_API_KEY`, and provide a
+JavaScript map ID in `GOOGLE_MAPS_MAP_ID`. The example uses Google's `DEMO_MAP_ID` for local
+testing; production should use a project-owned map ID and an HTTP-referrer-restricted key.
+
 The initial endpoints are:
 
 - Web: `http://127.0.0.1:3000`
