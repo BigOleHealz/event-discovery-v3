@@ -1,0 +1,32 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# JavaScript / TypeScript
+node_modules/
+.next/
+dist/
+coverage/
+playwright-report/
+test-results/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+
+# Local runtime state
+*.log
+.airflow/
+
+PROJECT_PLAN.md

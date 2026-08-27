@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  repository-shape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify scaffold
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d api
+          test -d web
+          test -d airflow
+          test -d stagehand
+          test -d tests
+          test -f docker-compose.yml
+          test -f .env.example
+          test -f .gitignore
+          test -f README.md
+          test -f CONTRIBUTING.md
+          test -f PROJECT_PLAN.md
