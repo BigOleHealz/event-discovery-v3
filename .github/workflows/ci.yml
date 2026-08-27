@@ -8,24 +8,87 @@ permissions:
   contents: read
 
 jobs:
-  repository-shape:
+  api:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Verify scaffold
-        shell: bash
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: api/requirements-dev.txt
+
+      - name: Install API dependencies
+        working-directory: api
+        run: pip install --requirement requirements-dev.txt
+
+      - name: Lint and type-check API
+        working-directory: api
         run: |
-          set -euo pipefail
-          test -d api
-          test -d web
-          test -d airflow
-          test -d stagehand
-          test -d tests
-          test -f docker-compose.yml
-          test -f .env.example
-          test -f .gitignore
-          test -f README.md
-          test -f CONTRIBUTING.md
-          test -f PROJECT_PLAN.md
+          ruff check .
+          mypy
+
+      - name: Test API
+        working-directory: api
+        run: pytest
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Lint, type-check, build, and test web
+        working-directory: web
+        run: |
+          npm run lint
+          npm run build
+          npm test
+
+  compose-health:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify Compose service health
+        run: bash tests/phase1-compose.sh
+
+  e2e:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Install Chromium
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Phase 1 browser flow
+        run: bash tests/phase1-e2e.sh

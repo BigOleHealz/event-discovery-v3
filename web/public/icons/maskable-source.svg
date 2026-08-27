@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Event Discovery maskable map pin">
+  <rect width="512" height="512" fill="#d45d3f"/>
+  <path d="M256 112c-72.9 0-132 59.1-132 132 0 93.4 110.8 157.5 123.4 164.5a17.5 17.5 0 0 0 17.2 0C277.2 401.5 388 337.4 388 244c0-72.9-59.1-132-132-132Z" fill="#fffaf0" stroke="#723524" stroke-width="16"/>
+  <circle cx="256" cy="239" r="57" fill="#d45d3f"/>
+  <path d="m256 196 12.4 25.1 27.7 4-20 19.6 4.7 27.6-24.8-13-24.8 13 4.7-27.6-20-19.6 27.7-4L256 196Z" fill="#18231b"/>
+</svg>
