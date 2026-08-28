@@ -1,4 +1,5 @@
 import { importLibrary, setOptions } from "@googlemaps/js-api-loader";
+import type { MarkerClusterer as MarkerClustererInstance } from "@googlemaps/markerclusterer";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { EventDetailPanel } from "./EventDetailPanel";
@@ -38,11 +39,15 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
     let requestController = new AbortController();
     let markers: google.maps.marker.AdvancedMarkerElement[] = [];
     let markerListeners: google.maps.MapsEventListener[] = [];
+    let markerClusterer: MarkerClustererInstance | null = null;
     let idleListener: google.maps.MapsEventListener | null = null;
     let viewportTimer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
 
     function clearMarkers(): void {
+      markerClusterer?.clearMarkers(true);
+      markerClusterer?.setMap(null);
+      markerClusterer = null;
       for (const listener of markerListeners) {
         listener.remove();
       }
@@ -55,10 +60,11 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
 
     async function initializeMap(): Promise<void> {
       configureLoader(apiKey);
-      const [events, mapsLibrary, markerLibrary] = await Promise.all([
+      const [events, mapsLibrary, markerLibrary, { MarkerClusterer }] = await Promise.all([
         fetchEvents(apiBaseUrl, requestController.signal),
         importLibrary("maps") as Promise<google.maps.MapsLibrary>,
         importLibrary("marker") as Promise<google.maps.MarkerLibrary>,
+        import("@googlemaps/markerclusterer"),
       ]);
 
       if (cancelled || mapElement.current === null) {
@@ -76,11 +82,12 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
 
       function renderEvents(nextEvents: EventMapFeature[]): void {
         clearMarkers();
+        const eventMarkers: google.maps.marker.AdvancedMarkerElement[] = [];
         for (const event of nextEvents) {
           const [longitude, latitude] = event.geometry.coordinates;
           const isGridCell = isAggregatedGridCell(event);
           const marker = new markerLibrary.AdvancedMarkerElement({
-            map,
+            ...(isGridCell ? { map } : {}),
             position: { lat: latitude, lng: longitude },
             title: isGridCell
               ? `${event.properties.count} events`
@@ -98,8 +105,12 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
           );
           if (!isGridCell) {
             markerListeners.push(marker.addListener("click", () => setSelectedEvent(event)));
+            eventMarkers.push(marker);
           }
           markers.push(marker);
+        }
+        if (eventMarkers.length > 0) {
+          markerClusterer = new MarkerClusterer({ map, markers: eventMarkers });
         }
         setEventCount(
           nextEvents.reduce(

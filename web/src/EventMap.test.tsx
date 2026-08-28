@@ -7,7 +7,9 @@ import { EventMap } from "./EventMap";
 const mapConstructor = vi.fn();
 const markerConstructor = vi.fn();
 const pinConstructor = vi.fn();
+const markerClustererConstructor = vi.fn();
 const markerInstances: FakeMarker[] = [];
+const markerClustererInstances: FakeMarkerClusterer[] = [];
 const mapInstances: FakeMap[] = [];
 let viewport = { north: 40.1, south: 39.8, east: -74.9, west: -75.3 };
 let zoom = 12;
@@ -75,6 +77,16 @@ class FakePin {
   }
 }
 
+class FakeMarkerClusterer {
+  clearMarkers = vi.fn();
+  setMap = vi.fn();
+
+  constructor(options: { map: FakeMap; markers: FakeMarker[] }) {
+    markerClustererConstructor(options);
+    markerClustererInstances.push(this);
+  }
+}
+
 vi.mock("@googlemaps/js-api-loader", () => ({
   setOptions: vi.fn(),
   importLibrary: vi.fn((name: string) => {
@@ -83,6 +95,10 @@ vi.mock("@googlemaps/js-api-loader", () => ({
     }
     return Promise.resolve({ AdvancedMarkerElement: FakeMarker, PinElement: FakePin });
   }),
+}));
+
+vi.mock("@googlemaps/markerclusterer", () => ({
+  MarkerClusterer: FakeMarkerClusterer,
 }));
 
 const events: EventFeatureCollection = {
@@ -144,6 +160,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.clearAllMocks();
   markerInstances.length = 0;
+  markerClustererInstances.length = 0;
   mapInstances.length = 0;
   viewport = { north: 40.1, south: 39.8, east: -74.9, west: -75.3 };
   zoom = 12;
@@ -170,7 +187,7 @@ function stubEventResponse(
 }
 
 describe("EventMap", () => {
-  it("renders one longitude-correct Google marker per event", async () => {
+  it("clusters longitude-correct individual event markers", async () => {
     stubEventResponse();
 
     render(<EventMap apiBaseUrl="https://api.example.test" apiKey="test-key" mapId="map-id" />);
@@ -186,6 +203,12 @@ describe("EventMap", () => {
       }),
     );
     expect(pinConstructor).toHaveBeenCalledTimes(2);
+    expect(markerClustererConstructor).toHaveBeenCalledOnce();
+    expect(markerClustererConstructor).toHaveBeenCalledWith({
+      map: mapInstances[0],
+      markers: markerInstances,
+    });
+    expect(markerConstructor.mock.calls.every(([options]) => !("map" in options))).toBe(true);
   });
 
   it("opens an accessible detail slide-over with the source registration link", async () => {
@@ -242,8 +265,12 @@ describe("EventMap", () => {
     vi.useRealTimers();
     await waitFor(() => expect(markerConstructor).toHaveBeenCalledTimes(3));
     expect(markerInstances.slice(0, 2).every((marker) => marker.map === null)).toBe(true);
+    expect(markerClustererInstances[0]?.clearMarkers).toHaveBeenCalledWith(true);
+    expect(markerClustererInstances[0]?.setMap).toHaveBeenCalledWith(null);
+    expect(markerClustererConstructor).toHaveBeenCalledOnce();
     expect(markerConstructor).toHaveBeenLastCalledWith(
       expect.objectContaining({
+        map: mapInstances[0],
         position: { lat: 39.94628906, lng: -75.16845703 },
         title: "2 events",
       }),
