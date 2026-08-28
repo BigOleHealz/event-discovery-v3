@@ -1,0 +1,81 @@
+{
+  "results": [
+    {
+      "placeId": "ChIJG339Wi7GxokR120qaddoz30",
+      "location": {
+        "latitude": 39.9523882,
+        "longitude": -75.1640233
+      },
+      "formattedAddress": "1400 John F Kennedy Blvd, Philadelphia, PA 19107, USA",
+      "addressComponents": [
+        {
+          "longText": "1400",
+          "shortText": "1400",
+          "types": [
+            "street_number"
+          ]
+        },
+        {
+          "longText": "John F Kennedy Boulevard",
+          "shortText": "John F Kennedy Blvd",
+          "types": [
+            "route"
+          ],
+          "languageCode": "en"
+        },
+        {
+          "longText": "Center City",
+          "shortText": "Center City",
+          "types": [
+            "neighborhood",
+            "political"
+          ],
+          "languageCode": "en"
+        },
+        {
+          "longText": "Philadelphia",
+          "shortText": "Philadelphia",
+          "types": [
+            "locality",
+            "political"
+          ],
+          "languageCode": "en"
+        },
+        {
+          "longText": "Philadelphia County",
+          "shortText": "Philadelphia County",
+          "types": [
+            "administrative_area_level_2",
+            "political"
+          ],
+          "languageCode": "en"
+        },
+        {
+          "longText": "Pennsylvania",
+          "shortText": "PA",
+          "types": [
+            "administrative_area_level_1",
+            "political"
+          ],
+          "languageCode": "en"
+        },
+        {
+          "longText": "United States",
+          "shortText": "US",
+          "types": [
+            "country",
+            "political"
+          ],
+          "languageCode": "en"
+        },
+        {
+          "longText": "19107",
+          "shortText": "19107",
+          "types": [
+            "postal_code"
+          ]
+        }
+      ]
+    }
+  ]
+}

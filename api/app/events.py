@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl, TypeAdapter
 from sqlalchemy import Connection, text
 
 from app.clock import utc_now
@@ -25,6 +25,11 @@ class VenueProperties(BaseModel):
     city: str | None
 
 
+class RegistrationLink(BaseModel):
+    source: str
+    url: HttpUrl
+
+
 class EventProperties(BaseModel):
     title: str
     description: str | None
@@ -33,6 +38,7 @@ class EventProperties(BaseModel):
     timezone: str
     primary_category: str | None
     venue: VenueProperties
+    registration_links: list[RegistrationLink]
 
 
 class EventFeature(BaseModel):
@@ -45,6 +51,9 @@ class EventFeature(BaseModel):
 class EventFeatureCollection(BaseModel):
     type: Literal["FeatureCollection"] = "FeatureCollection"
     features: list[EventFeature]
+
+
+REGISTRATION_LINKS_ADAPTER = TypeAdapter(list[RegistrationLink])
 
 
 EVENT_QUERY = text(
@@ -62,7 +71,21 @@ EVENT_QUERY = text(
         venue.id AS venue_id,
         venue.name AS venue_name,
         venue.formatted_address,
-        venue.city
+        venue.city,
+        COALESCE(
+            (
+                SELECT jsonb_agg(
+                    jsonb_build_object(
+                        'source', listing.source,
+                        'url', COALESCE(listing.registration_url, listing.url)
+                    )
+                    ORDER BY listing.source, listing.id
+                )
+                FROM source_listing AS listing
+                WHERE listing.canonical_event_id = event.id
+            ),
+            '[]'::jsonb
+        ) AS registration_links
     FROM canonical_event AS event
     LEFT JOIN venue ON venue.id = event.venue_id
     WHERE event.archived_at IS NULL
@@ -94,6 +117,9 @@ def list_events(
                     name=row["venue_name"],
                     formatted_address=row["formatted_address"],
                     city=row["city"],
+                ),
+                registration_links=REGISTRATION_LINKS_ADAPTER.validate_python(
+                    row["registration_links"]
                 ),
             ),
         )

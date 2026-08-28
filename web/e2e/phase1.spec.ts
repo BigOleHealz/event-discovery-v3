@@ -4,7 +4,7 @@ import { expect, test } from "@playwright/test";
 
 const mapsFixturePath = new URL("./fixtures/google-maps.js", import.meta.url);
 
-test("renders seeded pins and provides an installable offline shell", async ({ page, context }) => {
+test("renders pins, event detail, and an installable offline shell", async ({ page, context }) => {
   const mapsFixture = await readFile(mapsFixturePath, "utf8");
   await page.route("https://maps.googleapis.com/maps/api/js?*", async (route) => {
     await route.fulfill({
@@ -13,12 +13,43 @@ test("renders seeded pins and provides an installable offline shell", async ({ p
       body: mapsFixture,
     });
   });
+  await page.route("**/api/events", async (route) => {
+    const response = await route.fetch();
+    const payload = (await response.json()) as {
+      features: Array<{
+        properties: {
+          registration_links: Array<{ source: string; url: string }>;
+        };
+      }>;
+    };
+    const firstFeature = payload.features[0];
+    if (firstFeature === undefined) {
+      throw new Error("Event fixture response contains no features");
+    }
+    firstFeature.properties.registration_links = [
+      {
+        source: "eventbrite",
+        url: "https://www.eventbrite.com/e/parkway-jazz-night",
+      },
+    ];
+    await route.fulfill({ response, json: payload });
+  });
 
   await page.goto("/");
 
   await expect(page.getByRole("status")).toHaveText("20 events");
   await expect(page.getByTestId("event-map")).toHaveAttribute("data-google-map-ready", "true");
   await expect(page.locator("[data-event-marker]")).toHaveCount(20);
+
+  await page.locator("[data-event-marker]").first().click();
+  const detail = page.getByRole("dialog");
+  await expect(detail).toBeVisible();
+  await expect(detail.getByRole("link", { name: "Register on Eventbrite" })).toHaveAttribute(
+    "href",
+    "https://www.eventbrite.com/e/parkway-jazz-night",
+  );
+  await detail.getByRole("button", { name: "Close details" }).click();
+  await expect(detail).toBeHidden();
 
   const manifestHref = await page.locator('link[rel="manifest"]').getAttribute("href");
   expect(manifestHref).not.toBeNull();

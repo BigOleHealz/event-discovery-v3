@@ -13,6 +13,14 @@ the required delivery workflow.
 Phase 1 provides a containerized PostGIS database, FastAPI GeoJSON endpoint, and an
 installable React map PWA backed by 20 seeded Philadelphia events.
 
+Phase 2 ingestion starts with nightly Eventbrite public listing-page discovery. It records
+page metadata, deduplicates event ids across configured categories, fetches and TTL-caches
+official detail payloads, stages each untouched detail in `source_listing.raw_payload`, and
+only then parses the listing so parser failures can be retried without another API call.
+Parsing rejects source-declared online events first, then virtual venue names or addresses,
+then online wording only when no physical venue exists, and finally listings with no usable
+address or coordinates. Hybrid events with a physical venue remain eligible.
+
 ## Repository layout
 
 - `api/` — FastAPI application
@@ -39,11 +47,29 @@ For the map, enable the Google Maps JavaScript API, set `GOOGLE_MAPS_API_KEY`, a
 JavaScript map ID in `GOOGLE_MAPS_MAP_ID`. The example uses Google's `DEMO_MAP_ID` for local
 testing; production should use a project-owned map ID and an HTTP-referrer-restricted key.
 
+For Eventbrite ingestion, set `EVENTBRITE_API_TOKEN` to the app's private token. Public
+listing pages supply discovery ids; the official per-event endpoint supplies parser-ready
+detail payloads. `EVENTBRITE_LOCATIONS` creates one independently tracked run per location,
+while `EVENTBRITE_CATEGORIES` is unioned inside each location run before detail calls. The
+default five-day window, page cap, and detail-cache TTL are configurable through environment
+variables in `.env.example`.
+
+The hourly geocoder uses Google Geocoding API v4. Set `GOOGLE_GEOCODING_API_KEY` to a
+server-side key restricted to the Geocoding API; do not reuse the browser-referrer key.
+Normalized input addresses are cached to canonical `venue` rows, so recurring venues do
+not spend another API call.
+After geocoding, each Eventbrite listing is upserted into its own `canonical_event` and
+linked through `source_listing`; later scrapes update that same event. Cross-listing dedup
+is intentionally deferred to Phase 4.
+The event GeoJSON includes one validated registration link per source. Selecting a map pin
+opens a responsive detail slide-over with the event time, venue, description, and source
+registration buttons.
+
 The initial endpoints are:
 
 - Web: `http://127.0.0.1:3000`
 - API health: `http://127.0.0.1:8000/health`
-- Seeded events GeoJSON: `http://127.0.0.1:8000/api/events`
+- Events GeoJSON: `http://127.0.0.1:8000/api/events`
 
 Run the Phase 1 container integration check without occupying the default host ports:
 

@@ -23,7 +23,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-docker compose --env-file "$env_file" --file "$compose_file" up --detach --build --wait postgres api web
+if ! docker compose --env-file "$env_file" --file "$compose_file" up \
+  --detach --build --wait postgres api web; then
+  docker compose --env-file "$env_file" --file "$compose_file" ps --all >&2
+  docker compose --env-file "$env_file" --file "$compose_file" logs \
+    --no-color --tail=200 api web >&2
+  exit 1
+fi
 web_address=$(docker compose --env-file "$env_file" --file "$compose_file" port web "$WEB_PORT")
 
 PLAYWRIGHT_BASE_URL="http://${web_address}" npm --prefix web run test:e2e

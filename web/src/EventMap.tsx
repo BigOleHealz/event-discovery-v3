@@ -1,6 +1,8 @@
 import { importLibrary, setOptions } from "@googlemaps/js-api-loader";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
+import { EventDetailPanel } from "./EventDetailPanel";
+import type { EventFeature } from "./events";
 import { fetchEvents } from "./events";
 
 const PHILADELPHIA_CENTER: google.maps.LatLngLiteral = { lat: 39.9526, lng: -75.1652 };
@@ -28,10 +30,13 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
   const mapElement = useRef<HTMLDivElement>(null);
   const [eventCount, setEventCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selectedEvent, setSelectedEvent] = useState<EventFeature | null>(null);
+  const closeDetails = useCallback(() => setSelectedEvent(null), []);
 
   useEffect(() => {
     const controller = new AbortController();
     const markers: google.maps.marker.AdvancedMarkerElement[] = [];
+    const markerListeners: google.maps.MapsEventListener[] = [];
     let cancelled = false;
 
     async function initializeMap(): Promise<void> {
@@ -71,6 +76,7 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
             scale: 0.92,
           }),
         );
+        markerListeners.push(marker.addListener("click", () => setSelectedEvent(event)));
         markers.push(marker);
       }
 
@@ -86,6 +92,9 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
     return () => {
       cancelled = true;
       controller.abort();
+      for (const listener of markerListeners) {
+        listener.remove();
+      }
       for (const marker of markers) {
         marker.map = null;
       }
@@ -98,6 +107,7 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
       <div className="map-status" role="status">
         {error ?? (eventCount === null ? "Loading Philadelphia events…" : `${eventCount} events`)}
       </div>
+      <EventDetailPanel event={selectedEvent} onClose={closeDetails} />
     </section>
   );
 }

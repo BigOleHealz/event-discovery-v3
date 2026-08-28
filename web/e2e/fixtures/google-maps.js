@@ -17,6 +17,9 @@
       this._map = null;
       this.position = options.position;
       this.title = options.title || "";
+      this.style.display = "block";
+      this.style.width = "2rem";
+      this.style.height = "2.5rem";
       this.map = options.map || null;
     }
 
@@ -30,6 +33,13 @@
       if (value && value.element) {
         value.element.append(this);
       }
+    }
+
+    addListener(eventName, handler) {
+      this.addEventListener(eventName, handler);
+      return {
+        remove: () => this.removeEventListener(eventName, handler),
+      };
     }
   }
 
