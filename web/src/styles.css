@@ -134,7 +134,7 @@ a {
 }
 
 .filter-group legend,
-.filter-category > span:first-child {
+.filter-category > label {
   padding: 0;
   margin-bottom: 0.45rem;
   color: #33463a;
@@ -157,6 +157,33 @@ a {
   color: #5b685e;
   font-size: 0.74rem;
   font-weight: 750;
+}
+
+.category-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.75rem;
+  padding: 0.2rem 0 0;
+  margin: 0;
+  list-style: none;
+}
+
+.category-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: #48564c;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.category-swatch {
+  width: 0.78rem;
+  height: 0.78rem;
+  flex: 0 0 auto;
+  border: 1px solid rgb(24 35 27 / 55%);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 55%);
 }
 
 .filter-group input,

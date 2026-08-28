@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { EventDetailPanel } from "./EventDetailPanel";
 import { EventFilterSidebar } from "./EventFilterSidebar";
+import { AGGREGATED_CELL_PIN_STYLE, pinStyleForCategory } from "./categoryPinStyle";
 import { readEventFilters, replaceEventFilterUrl } from "./eventFilterState";
 import type { EventFeature, EventFilters, EventMapFeature, EventViewport } from "./events";
 import { fetchEvents, isAggregatedGridCell } from "./events";
@@ -119,6 +120,9 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
         for (const event of nextEvents) {
           const [longitude, latitude] = event.geometry.coordinates;
           const isGridCell = isAggregatedGridCell(event);
+          const pinStyle = isGridCell
+            ? AGGREGATED_CELL_PIN_STYLE
+            : pinStyleForCategory(event.properties.primary_category);
           const marker = new markerLibrary.AdvancedMarkerElement({
             ...(isGridCell ? { map } : {}),
             position: { lat: latitude, lng: longitude },
@@ -129,9 +133,7 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
           marker.dataset[isGridCell ? "eventCell" : "eventMarker"] = event.id;
           marker.append(
             new markerLibrary.PinElement({
-              background: isGridCell ? "#59636e" : "#d45d3f",
-              borderColor: isGridCell ? "#303841" : "#723524",
-              glyphColor: "#fffaf0",
+              ...pinStyle,
               glyph: isGridCell ? String(event.properties.count) : undefined,
               scale: isGridCell ? 1.08 : 0.92,
             }),

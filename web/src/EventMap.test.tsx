@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { AGGREGATED_CELL_PIN_STYLE, pinStyleForCategory } from "./categoryPinStyle";
 import type { EventFeatureCollection, EventMapFeatureCollection } from "./events";
 import { EventMap } from "./EventMap";
 
@@ -204,12 +205,31 @@ describe("EventMap", () => {
       }),
     );
     expect(pinConstructor).toHaveBeenCalledTimes(2);
+    expect(pinConstructor).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining(pinStyleForCategory("music")),
+    );
+    expect(pinConstructor).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining(pinStyleForCategory("science")),
+    );
+    expect(pinStyleForCategory("music")).not.toBe(pinStyleForCategory("science"));
     expect(markerClustererConstructor).toHaveBeenCalledOnce();
     expect(markerClustererConstructor).toHaveBeenCalledWith({
       map: mapInstances[0],
       markers: markerInstances,
     });
     expect(markerConstructor.mock.calls.every(([options]) => !("map" in options))).toBe(true);
+
+    const legend = screen.getByRole("list", { name: "Category color legend" });
+    const musicLegendItem = within(legend).getByText("music").closest("li");
+    const scienceLegendItem = within(legend).getByText("science").closest("li");
+    expect(musicLegendItem?.querySelector(".category-swatch")).toHaveStyle({
+      backgroundColor: pinStyleForCategory("music").background,
+    });
+    expect(scienceLegendItem?.querySelector(".category-swatch")).toHaveStyle({
+      backgroundColor: pinStyleForCategory("science").background,
+    });
   });
 
   it("opens an accessible detail slide-over with the source registration link", async () => {
@@ -277,7 +297,7 @@ describe("EventMap", () => {
       }),
     );
     expect(pinConstructor).toHaveBeenLastCalledWith(
-      expect.objectContaining({ glyph: "2", background: "#59636e" }),
+      expect.objectContaining({ glyph: "2", ...AGGREGATED_CELL_PIN_STYLE }),
     );
   });
 

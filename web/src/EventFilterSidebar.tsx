@@ -1,5 +1,6 @@
 import type { ChangeEvent } from "react";
 
+import { pinStyleForCategory } from "./categoryPinStyle";
 import { dateInputValue, endOfUtcDate, startOfUtcDate } from "./eventFilterState";
 import type { EventFilters } from "./events";
 
@@ -96,12 +97,14 @@ export function EventFilterSidebar({
         <p className="filter-hint">Overnight ranges, such as 10 PM–2 AM, are supported.</p>
       </fieldset>
 
-      <label className="filter-group filter-category">
-        <span>Categories</span>
+      <div className="filter-group filter-category">
+        <label htmlFor="event-category-filter">Categories</label>
         <select
+          id="event-category-filter"
           multiple
           value={filters.categories}
           size={Math.min(Math.max(availableCategories.length, 3), 6)}
+          aria-describedby="event-category-hint"
           onChange={updateCategories}
         >
           {availableCategories.map((category) => (
@@ -110,8 +113,24 @@ export function EventFilterSidebar({
             </option>
           ))}
         </select>
-        <span className="filter-hint">Choose one or more.</span>
-      </label>
+        <span id="event-category-hint" className="filter-hint">
+          Choose one or more. Pin colors identify categories.
+        </span>
+        {availableCategories.length > 0 ? (
+          <ul className="category-legend" aria-label="Category color legend">
+            {availableCategories.map((category) => (
+              <li key={category}>
+                <span
+                  className="category-swatch"
+                  style={{ backgroundColor: pinStyleForCategory(category).background }}
+                  aria-hidden="true"
+                />
+                <span>{category}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
     </aside>
   );
 }
