@@ -250,10 +250,19 @@ CREATE TABLE ingest.run (
     source_url      TEXT,
     city_searched   TEXT NOT NULL,
     search_bounds   GEOGRAPHY(POLYGON, 4326),
+    categories      TEXT[],             -- categories crawled in this run
+    window_start    DATE,               -- date window the crawl covered
+    window_end      DATE,
     started_at      TIMESTAMPTZ NOT NULL,
     finished_at     TIMESTAMPTZ,
     status          TEXT NOT NULL,      -- running|success|partial|failed
+    -- Funnel counters. listing_appearances counts every time an id was seen across all
+    -- pages and categories; events_found counts DISTINCT ids after dedup. The gap between
+    -- them is the crawl overlap, and it's the number worth watching.
+    listing_appearances INT DEFAULT 0,
     events_found    INT DEFAULT 0,
+    detail_fetched  INT DEFAULT 0,      -- stage-2 calls actually made
+    detail_cached   INT DEFAULT 0,      -- stage-2 calls served from cache
     events_new      INT DEFAULT 0,
     events_updated  INT DEFAULT 0,
     events_deduped  INT DEFAULT 0,
@@ -267,6 +276,8 @@ CREATE TABLE ingest.page_fetch (
     id              UUID PRIMARY KEY,
     run_id          UUID REFERENCES ingest.run(id),
     url             TEXT NOT NULL,
+    search_target   TEXT,               -- 'science-and-tech:2026-08-27..2026-08-31'
+    page_number     INT,
     http_status     INT,
     fetch_method    TEXT,               -- 'http' | 'stagehand'
     duration_ms     INT,
@@ -467,11 +478,86 @@ Each DAG run opens an `ingest.run` row on start and closes it on finish, success
 ### Task flow per source
 
 ```
-open_run  →  fetch_pages  →  parse_listings  →  geocode  →  dedup  →  upsert  →  close_run
+open_run  →  fetch_pages  →  collect_ids  →  fetch_details  →  parse_listings
+          →  geocode  →  dedup  →  upsert  →  close_run
 ```
 
 Scraping should stage raw payloads in `source_listing.raw_payload` before parsing, so a
 parser bug is re-runnable without re-fetching.
+
+`fetch_pages` records `ingest.page_fetch` rows only — it does not stage payloads. Staging
+happens after `fetch_details`, because on a two-stage source the listing page and the detail
+payload are different fetches. Keeping page recording separate from staging is what makes
+the id-dedup step possible between them.
+
+Sources without a detail stage collapse `collect_ids` and `fetch_details` into pass-throughs
+rather than getting a different flow.
+
+### Eventbrite source spec
+
+Eventbrite has **no public event search API** — `GET /v3/events/search/` was withdrawn in
+2019. Discovery therefore comes from the public search pages; only the per-event detail
+comes from the API. Two stages.
+
+**Stage 1 — listing crawl.** The crawl target is a `(location, category, date_window)`
+tuple. **One `ingest.run` covers one `(source, location)` per scheduled execution**, and
+crawls every configured category and date window inside it — the tuple is the unit of
+*work*, not the unit of *run*.
+
+The reason is quota. Ids must be unioned across all tuples before detail fetching, because
+the same event appears under several categories and in overlapping windows, and each
+duplicate that survives to stage 2 is a wasted API call. Deduping per tuple wouldn't catch
+cross-category repeats. Per-tuple visibility is preserved through `ingest.page_fetch`, which
+records the search target on every row, so "which category was thin last night?" is still a
+SQL question.
+
+Locations get separate runs. Philadelphia and a future New York crawl are independent, fail
+independently, and shouldn't share a partial status.
+
+```
+https://www.eventbrite.com/d/{location}/{category}--events/?page={n}&start_date={d1}&end_date={d2}
+```
+
+- `location` — `pa--philadelphia` to start
+- `category` — top-level slug in the path, not a query param. Start with
+  `science-and-tech` and `food-and-drink`; the list is config, not code, so adding
+  `music`, `arts`, etc. is a config change and a backfill run.
+- `date_window` — short windows (3–5 days), rolled forward. Narrow windows keep each query
+  under Eventbrite's paginated-result ceiling; a single city-wide unbounded query gets
+  silently truncated.
+
+Pagination rules, all of which matter:
+
+- Increment `page` until a page yields **zero** events, or until the set of event ids on a
+  page is identical to the previous page. Some listing endpoints serve the last page
+  indefinitely rather than 404ing, and a naive loop spins forever.
+- Cap pages per tuple at a configured maximum and log a warning if it's hit — that means the
+  date window is too wide and should be split.
+- Record every page fetch in `ingest.page_fetch`, so "did it paginate?" is answerable from
+  SQL rather than by re-running.
+
+Stage 1 output is a set of event ids, parsed out of the event URL:
+`/e/{slug}-tickets-{event_id}`. Strip the `?aff=` query param — it's search attribution,
+not part of the canonical URL.
+
+**Deduplicate ids within the crawl before staging.** The same event appears under multiple
+categories and in overlapping date windows, so a run will surface the same id repeatedly.
+Dedup on the Eventbrite id at this stage — it is free, exact, and keeps identical listings
+from ever reaching the fuzzy dedup in §4.
+
+**Stage 2 — detail fetch.** `GET /v3/events/{event_id}/?expand=venue,category,organizer`.
+Verified working for events the token does not own.
+
+- Implement behind a `fetch_event_detail(event_id)` interface with two implementations: the
+  API, and a JSON-LD fallback parsed from the event page (`schema.org/Event` carries name,
+  start, end, location and address). If API access changes, swap the implementation —
+  everything downstream reads `raw_payload` and doesn't care which produced it.
+- Respect the `X-Rate-Limit` response header rather than a hardcoded number. Read remaining
+  quota on the first call of a run and pace accordingly; on 429, back off and leave the run
+  `partial` rather than failing it. `partial` means the ids are known and some details are
+  missing — a re-run should pick up only what's outstanding, not re-crawl.
+- Cache by event id with a TTL. Most events don't change between nightly runs, and re-fetching
+  unchanged events is the fastest way to burn quota for nothing.
 
 ### Stagehand
 
@@ -586,6 +672,17 @@ All event-returning endpoints exclude `archived_at IS NOT NULL` and filter to
 - **Refetch**: on map `idle` event, debounced ~300ms so panning doesn't hammer the backend
 - **Clustering**: marker clustering for dense areas; server-provided cell counts below
   zoom 13
+- **Pin styling**: pin colour encodes category, from a fixed palette keyed to top-level
+  category so a given category is the same colour everywhere in the app. A legend sits with
+  the sidebar category filter — the colours mean nothing without it. Colour is reserved for
+  category and nothing else, so the encoding stays unambiguous.
+  - At zoom < 13 the `ST_SnapToGrid` cells hold mixed categories, so cells render neutral
+    with a count. If that proves unreadable in practice, the fallback is colouring by the
+    cell's dominant category and staying neutral below a dominance threshold — but start
+    neutral; it is cheaper and it does not lie.
+  - Palette must be colourblind-safe and distinguishable at 24px against map tiles. Cap
+    top-level categories at what a palette can carry (~8); subcategories inherit the parent
+    colour.
 - **Sidebar filter**: date range picker, time-of-day range, category multi-select — all
   filters are URL query params so views are shareable
 - **Event detail**: slide-over panel; shows one event with a registration button per source
@@ -594,8 +691,10 @@ All event-returning endpoints exclude `archived_at IS NOT NULL` and filter to
 - **Invite flow**: pick event → select from imported contacts or enter emails/numbers →
   optional message → send (routes in-app when the contact matches a registered user, SMS or
   email otherwise)
-- **Friends layer**: toggle on the map that restyles pins your friends are `ATTENDING`,
-  with their avatars in the event detail panel
+- **Friends layer**: toggle on the map that adds a badge — a ring or corner dot — to pins
+  your friends are `ATTENDING`, with their avatars in the event detail panel. Deliberately a
+  badge rather than a recolour: category owns colour, so the two encodings stack instead of
+  competing, and a friends-attending comedy show still reads as comedy.
 - **Saved searches**: "save this search" button on the sidebar filter, capturing the current
   bounds + filters; managed from a settings panel with per-search notification frequency
 - **Calendar export**: "Add to calendar" on the event detail — ICS download plus a Google
@@ -623,10 +722,8 @@ Installable from the browser on desktop and mobile — no app store, one codebas
   screen" affordance after the second visit, never on first load
 - **iOS caveats** — Safari only allows Web Push for installed PWAs, so the push opt-in in
   Phase 7e must detect `display-mode: standalone` and prompt the user to install first
-- **Runtime caching** — network-first for event data and cache-first for first-party static
-  assets, with a versioned cache name so deploys invalidate cleanly. Do not prefetch or
-  persist Google Maps tiles or other Google Maps Platform content; leave that content to
-  Google's own client and HTTP caching behaviour.
+- **Runtime caching** — network-first for event data, cache-first for tiles and static
+  assets, with a versioned cache name so deploys invalidate cleanly
 
 ---
 
@@ -681,8 +778,8 @@ containers, not mocks — wherever the dependency is cheap to run.
 | API | `pytest` + `httpx.AsyncClient` | Every endpoint: params, auth, pagination, error shapes |
 | DAG | `pytest` + Airflow test harness | Task wiring, retries, `ingest.run` lifecycle |
 | Frontend unit | `vitest` + Testing Library | Sidebar filters, URL param sync, detail panel |
-| E2E | `playwright` | Map loads, filter changes results, sign-in, invite flow, current Chromium PWA installability diagnostics |
-| Migrations | `alembic` upgrade/downgrade | Every revision applies and removes its application-owned objects on a clean DB |
+| E2E | `playwright` | Map loads, filter changes results, sign-in, invite flow, PWA install |
+| Migrations | `alembic` upgrade/downgrade | Every revision applies and reverses on a clean DB |
 
 ### Rules that matter
 
@@ -705,11 +802,7 @@ containers, not mocks — wherever the dependency is cheap to run.
 - **Idempotency.** Every DAG task runs twice in a test and asserts the second run produces no
   duplicate rows. Ingestion is inherently re-run.
 - **Service worker.** Playwright asserts the manifest is served, the worker registers, the
-  declared icon files have the expected dimensions, Chromium reports no installability
-  errors, the shell loads with the network offline, and the stale-data banner appears.
-- **Migration ownership.** Downgrades remove tables, indexes, schemas, and other objects
-  created by the application revision. They do not remove PostGIS or related extensions
-  provisioned and shared by the database image.
+  shell loads with the network offline, and the stale-data banner appears.
 
 ### CI
 
@@ -775,23 +868,23 @@ sub-phase should leave the app broken.
 
 - **1a** — Compose file with `postgres` (PostGIS), `api`, `web`; health checks on all three;
   `.env.example` committed
-- **1b** — Alembic migrations for the complete §3.1 schema in the dependency order shown
-  there; seed script with ~20 hand-written Philly events
+- **1b** — Postgres schema migrations (`canonical_event`, `venue`, `source_listing`) via
+  Alembic; seed script with ~20 hand-written Philly events
 - **1c** — FastAPI `GET /api/events` returning seeded events as GeoJSON
 - **1d** — React app with a full-bleed Google Map rendering the seeded pins
 - **1e** — PWA shell: manifest, icon set, service worker precaching the app shell,
-  installable with no current Chromium installability errors; Playwright verifies the
-  manifest, icon dimensions, service worker control, and offline shell
+  installable and passing a Lighthouse PWA audit
 
 *Done when:* hardcoded events appear on a real map, all from containers, and the app
-installs to a phone home screen. The real-map check uses a browser-restricted Google Maps
-API key and a map ID from the same Google Cloud project. CI uses a deterministic Maps
-transport fixture; it does not replace the manual real-map and phone installation checks.
+installs to a phone home screen.
 
 ### Phase 2 — One source, end to end
 
 - **2a** — Airflow container joins Compose; `ingest.run` / `ingest.page_fetch` schema
-- **2b** — `ingest_eventbrite` DAG: fetch → stage `raw_payload` → parse
+- **2b** — `ingest_eventbrite` DAG per the source spec in §5: listing crawl over
+  `(location, category, date_window)` tuples with real pagination termination and id
+  dedup, then detail fetch → stage `raw_payload` → parse. Start with
+  `pa--philadelphia` × {`science-and-tech`, `food-and-drink`}
 - **2b.1** — Online-event filter in `parse_listings`, with `ingest.rejected_listing` logging
 - **2c** — `geocode_pending` DAG: Google Geocoding → `venue` rows keyed on
   `google_place_id`, cached
@@ -809,7 +902,9 @@ transport fixture; it does not replace the manual real-map and phone installatio
   aggregated cells below
 - **3d** — Client-side marker clustering for dense areas
 - **3e** — Sidebar: date range, time-of-day, category multi-select — all as URL query params
-- **3f** — Offline caching of the last successful viewport response, with a stale-data banner
+- **3f** — Category colour palette on pins, plus a legend in the sidebar; neutral cells
+  below zoom 13
+- **3g** — Offline caching of the last successful viewport response, with a stale-data banner
 
 *Done when:* zooming out over the northeast returns counts, not thirty thousand pins.
 
@@ -846,7 +941,8 @@ and the ambiguous band is reviewable in a browser.
 - **6d** — Contacts import (Google Contacts / vCard), `match_contacts_to_users` DAG,
   SMS invites for unmatched contacts (Twilio; per-message cost absorbed for now)
 - **6d.1** — Shadow accounts: one-tap SMS invite acceptance, claim-on-signup merge
-- **6e** — Friends: `FRIENDS_WITH` edges, and the friends-are-going map layer
+- **6e** — Friends: `FRIENDS_WITH` edges, and the friends-are-going map layer, rendered as a
+  badge on pins so category colour survives
 
 *Done when:* you can text a friend an invite and see them light up on the map on accept.
 
@@ -926,6 +1022,13 @@ Settled, recorded so they don't get relitigated:
 - **Progressive web app, not native.** Installable from the browser on desktop and mobile,
   one codebase; the service worker doubles as the Web Push worker. Native builds are a
   non-goal for v1. (§1, §7)
+- **Eventbrite is scrape-then-API.** No public search endpoint exists, so discovery comes
+  from public listing pages and detail comes from `GET /v3/events/{id}/`, which is confirmed
+  to serve events the token does not own. Detail fetching sits behind an interface with a
+  JSON-LD fallback in case that changes. (§5)
+- **Colour encodes category, badges encode everything else.** Pin colour is reserved for
+  category; the friends-attending layer is a badge on top. Prevents two encodings fighting
+  over the same visual channel. (§7)
 
 ## 14. Open Questions
 

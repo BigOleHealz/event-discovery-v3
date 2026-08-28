@@ -15,6 +15,22 @@ x-airflow-common: &airflow-common
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${AIRFLOW_DB}
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
     EVENT_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+    EVENTBRITE_API_BASE_URL: ${EVENTBRITE_API_BASE_URL}
+    EVENTBRITE_API_TOKEN: ${EVENTBRITE_API_TOKEN}
+    EVENTBRITE_CATEGORIES: ${EVENTBRITE_CATEGORIES:-science-and-tech,food-and-drink}
+    EVENTBRITE_DAG_SCHEDULE: ${EVENTBRITE_DAG_SCHEDULE}
+    EVENTBRITE_DETAIL_CACHE_TTL_HOURS: ${EVENTBRITE_DETAIL_CACHE_TTL_HOURS:-24}
+    EVENTBRITE_LOCATIONS: ${EVENTBRITE_LOCATIONS:-pa--philadelphia}
+    EVENTBRITE_PAGE_CAP: ${EVENTBRITE_PAGE_CAP:-20}
+    EVENTBRITE_REQUEST_TIMEOUT_SECONDS: ${EVENTBRITE_REQUEST_TIMEOUT_SECONDS:-30}
+    EVENTBRITE_WEB_BASE_URL: ${EVENTBRITE_WEB_BASE_URL:-https://www.eventbrite.com}
+    EVENTBRITE_WINDOW_DAYS: ${EVENTBRITE_WINDOW_DAYS:-5}
+    GOOGLE_GEOCODING_API_BASE_URL: ${GOOGLE_GEOCODING_API_BASE_URL}
+    GOOGLE_GEOCODING_API_KEY: ${GOOGLE_GEOCODING_API_KEY}
+    GOOGLE_GEOCODING_DAG_SCHEDULE: ${GOOGLE_GEOCODING_DAG_SCHEDULE}
+    GOOGLE_GEOCODING_LANGUAGE_CODE: ${GOOGLE_GEOCODING_LANGUAGE_CODE}
+    GOOGLE_GEOCODING_REGION_CODE: ${GOOGLE_GEOCODING_REGION_CODE}
+    GOOGLE_GEOCODING_TIMEOUT_SECONDS: ${GOOGLE_GEOCODING_TIMEOUT_SECONDS:-10}
   volumes:
     - airflow_logs:/opt/airflow/logs
   restart: unless-stopped
@@ -31,7 +47,11 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready --host 127.0.0.1 --port 5432 --username $$POSTGRES_USER --dbname $$POSTGRES_DB",
+        ]
       interval: 5s
       timeout: 5s
       retries: 12
@@ -124,6 +144,8 @@ services:
     build:
       context: ./api
     environment:
+      API_DB_STARTUP_ATTEMPTS: ${API_DB_STARTUP_ATTEMPTS:-30}
+      API_DB_STARTUP_RETRY_SECONDS: ${API_DB_STARTUP_RETRY_SECONDS:-1}
       API_HOST: ${API_HOST}
       API_PORT: ${API_PORT}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
@@ -149,8 +171,8 @@ services:
         - "import os, urllib.request; urllib.request.urlopen(f\"http://127.0.0.1:{os.environ['API_PORT']}/health\", timeout=2)"
       interval: 5s
       timeout: 5s
-      retries: 12
-      start_period: 5s
+      retries: 18
+      start_period: 30s
     restart: unless-stopped
 
   web:

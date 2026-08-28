@@ -10,6 +10,11 @@ export interface VenueProperties {
   city: string | null;
 }
 
+export interface RegistrationLink {
+  source: string;
+  url: string;
+}
+
 export interface EventProperties {
   title: string;
   description: string | null;
@@ -18,6 +23,7 @@ export interface EventProperties {
   timezone: string;
   primary_category: string | null;
   venue: VenueProperties;
+  registration_links: RegistrationLink[];
 }
 
 export interface EventFeature {
@@ -60,6 +66,22 @@ function isVenueProperties(value: unknown): value is VenueProperties {
   );
 }
 
+function isHttpUrl(value: unknown): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isRegistrationLink(value: unknown): value is RegistrationLink {
+  return isRecord(value) && typeof value.source === "string" && isHttpUrl(value.url);
+}
+
 function isEventProperties(value: unknown): value is EventProperties {
   return (
     isRecord(value) &&
@@ -69,7 +91,9 @@ function isEventProperties(value: unknown): value is EventProperties {
     isNullableString(value.ends_at) &&
     typeof value.timezone === "string" &&
     isNullableString(value.primary_category) &&
-    isVenueProperties(value.venue)
+    isVenueProperties(value.venue) &&
+    Array.isArray(value.registration_links) &&
+    value.registration_links.every(isRegistrationLink)
   );
 }
 

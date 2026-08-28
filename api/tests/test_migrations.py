@@ -24,7 +24,13 @@ EXPECTED_TABLES = (
     "notification_log",
     "saved_search_hit",
 )
-EXPECTED_INGEST_TABLES = {"run", "page_fetch", "rejected_listing"}
+EXPECTED_INGEST_TABLES = {
+    "event_detail_cache",
+    "run",
+    "page_fetch",
+    "rejected_listing",
+    "geocode_cache",
+}
 
 
 def migration_config(database_url: str) -> Config:
@@ -70,6 +76,41 @@ def test_migrations_seed_and_constraints(database_url: str) -> None:
     command.upgrade(config, "head")
     assert table_names(engine) == set(EXPECTED_TABLES)
     assert ingest_table_names(engine) == EXPECTED_INGEST_TABLES
+
+    with engine.connect() as connection:
+        run_columns = {
+            str(row.column_name)
+            for row in connection.execute(
+                text(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'ingest' AND table_name = 'run'
+                    """
+                )
+            )
+        }
+        assert {
+            "categories",
+            "window_start",
+            "window_end",
+            "listing_appearances",
+            "detail_fetched",
+            "detail_cached",
+        } <= run_columns
+        page_columns = {
+            str(row.column_name)
+            for row in connection.execute(
+                text(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'ingest' AND table_name = 'page_fetch'
+                    """
+                )
+            )
+        }
+        assert {"search_target", "page_number"} <= page_columns
 
     seed_database(engine)
     seed_database(engine)
