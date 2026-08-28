@@ -14,7 +14,8 @@ This file covers orientation and context hygiene only.
 Read only what the current task needs. `PROJECT_PLAN.md` is long; read the section named in
 the prompt (`§5`, `§3.2`) rather than the whole file. Section numbers are stable.
 
-Current position: **Phase 3, through 3b.** The roadmap is §11.
+The roadmap is §11. For where the work actually stands, run `git log --oneline -5` and
+`rtk git status` — not a line in this file, which would be stale within a day.
 
 **Never commit or push without explicit authorization from the maintainer**, including when
 a task prompt says to commit. See CONTRIBUTING.md — that language is the intended eventual
@@ -58,6 +59,21 @@ something.
 **On a truncated failure, open the tee log.** RTK saves full unfiltered output on failure
 and prints the path. Read it rather than re-running the command or guessing. Never skip a
 diagnosis because output was compact. See `RTK.md`.
+
+## Maintaining these documents
+
+Do not update `PROJECT_PLAN.md`, `CONTRIBUTING.md` or this file as part of implementing a
+sub-phase. Progress is recorded by commits, not by editing the spec.
+
+Propose an edit only when implementation shows a document is **wrong** — a decision that
+doesn't survive contact with the code, a constraint that turned out to be impossible, a
+schema detail that changed. Report it, wait for authorization, then edit in a commit of its
+own, separate from code.
+
+When editing: change the part that's wrong and nothing else. Do not condense, reorganize,
+or improve surrounding prose. The rationale paragraphs are load-bearing — they exist so
+that a future session doesn't re-argue a settled decision, and they are the first thing
+lost to well-intentioned tidying. A shorter plan is not a better one.
 
 ## Commands
 
