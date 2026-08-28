@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -85,6 +85,57 @@ class BoundingBox:
     west: float
 
 
+@dataclass(frozen=True)
+class EventFilters:
+    starts_after: datetime
+    starts_before: datetime | None
+    categories: tuple[str, ...]
+    time_of_day_start: time | None
+    time_of_day_end: time | None
+
+
+def get_event_filters(
+    current_time: Annotated[datetime, Depends(utc_now)],
+    starts_after: Annotated[datetime | None, Query()] = None,
+    starts_before: Annotated[datetime | None, Query()] = None,
+    categories: Annotated[str | None, Query(max_length=1000)] = None,
+    time_of_day_start: Annotated[time | None, Query()] = None,
+    time_of_day_end: Annotated[time | None, Query()] = None,
+) -> EventFilters:
+    """Validate event filters and retain the future-events default."""
+    for name, value in (("starts_after", starts_after), ("starts_before", starts_before)):
+        if value is not None and value.utcoffset() is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"{name} must include a UTC offset",
+            )
+    if starts_after is not None and starts_before is not None and starts_after > starts_before:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="starts_after must be before or equal to starts_before",
+        )
+
+    category_values = tuple(
+        dict.fromkeys(
+            category.strip()
+            for category in (categories or "").split(",")
+            if category.strip()
+        )
+    )
+    if categories is not None and not category_values:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="categories must contain at least one non-empty category",
+        )
+    return EventFilters(
+        starts_after=starts_after or current_time,
+        starts_before=starts_before,
+        categories=category_values,
+        time_of_day_start=time_of_day_start,
+        time_of_day_end=time_of_day_end,
+    )
+
+
 def get_bounding_box(
     north: Annotated[float | None, Query(ge=-90, le=90)] = None,
     south: Annotated[float | None, Query(ge=-90, le=90)] = None,
@@ -134,6 +185,51 @@ BOUNDS_CLAUSE = """
 """
 
 
+FILTER_CLAUSE = """
+      AND event.starts_at >= :starts_after
+      AND (
+          CAST(:starts_before AS timestamptz) IS NULL
+          OR event.starts_at <= CAST(:starts_before AS timestamptz)
+      )
+      AND (
+          CAST(:categories AS text[]) IS NULL
+          OR event.primary_category = ANY(CAST(:categories AS text[]))
+      )
+      AND (
+          (
+              CAST(:time_of_day_start AS time) IS NULL
+              AND CAST(:time_of_day_end AS time) IS NULL
+          )
+          OR (
+              CAST(:time_of_day_start AS time) IS NOT NULL
+              AND CAST(:time_of_day_end AS time) IS NULL
+              AND (event.starts_at AT TIME ZONE event.timezone)::time
+                  >= CAST(:time_of_day_start AS time)
+          )
+          OR (
+              CAST(:time_of_day_start AS time) IS NULL
+              AND CAST(:time_of_day_end AS time) IS NOT NULL
+              AND (event.starts_at AT TIME ZONE event.timezone)::time
+                  <= CAST(:time_of_day_end AS time)
+          )
+          OR (
+              CAST(:time_of_day_start AS time) <= CAST(:time_of_day_end AS time)
+              AND (event.starts_at AT TIME ZONE event.timezone)::time
+                  BETWEEN CAST(:time_of_day_start AS time) AND CAST(:time_of_day_end AS time)
+          )
+          OR (
+              CAST(:time_of_day_start AS time) > CAST(:time_of_day_end AS time)
+              AND (
+                  (event.starts_at AT TIME ZONE event.timezone)::time
+                      >= CAST(:time_of_day_start AS time)
+                  OR (event.starts_at AT TIME ZONE event.timezone)::time
+                      <= CAST(:time_of_day_end AS time)
+              )
+          )
+      )
+"""
+
+
 EVENT_SELECT = """
     SELECT
         event.id,
@@ -166,16 +262,23 @@ EVENT_SELECT = """
     FROM canonical_event AS event
     LEFT JOIN venue ON venue.id = event.venue_id
     WHERE event.archived_at IS NULL
-      AND event.starts_at >= :current_time
+      {filter_clause}
       {bounds_clause}
     ORDER BY event.starts_at, event.id
     LIMIT {event_limit}
 """
 
-EVENT_QUERY = text(EVENT_SELECT.format(bounds_clause="", event_limit=MAX_INDIVIDUAL_EVENTS))
+EVENT_QUERY = text(
+    EVENT_SELECT.format(
+        filter_clause=FILTER_CLAUSE,
+        bounds_clause="",
+        event_limit=MAX_INDIVIDUAL_EVENTS,
+    )
+)
 
 BOUNDED_EVENT_QUERY = text(
     EVENT_SELECT.format(
+        filter_clause=FILTER_CLAUSE,
         bounds_clause=BOUNDS_CLAUSE,
         event_limit=MAX_INDIVIDUAL_EVENTS,
     )
@@ -188,7 +291,7 @@ AGGREGATED_EVENT_SELECT = """
             event.primary_category
         FROM canonical_event AS event
         WHERE event.archived_at IS NULL
-          AND event.starts_at >= :current_time
+          {filter_clause}
           {bounds_clause}
     ),
     grid_counts AS (
@@ -235,18 +338,31 @@ AGGREGATED_EVENT_SELECT = """
     ORDER BY latitude, longitude
 """
 
-AGGREGATED_EVENT_QUERY = text(AGGREGATED_EVENT_SELECT.format(bounds_clause=""))
-AGGREGATED_BOUNDED_EVENT_QUERY = text(AGGREGATED_EVENT_SELECT.format(bounds_clause=BOUNDS_CLAUSE))
+AGGREGATED_EVENT_QUERY = text(
+    AGGREGATED_EVENT_SELECT.format(filter_clause=FILTER_CLAUSE, bounds_clause="")
+)
+AGGREGATED_BOUNDED_EVENT_QUERY = text(
+    AGGREGATED_EVENT_SELECT.format(
+        filter_clause=FILTER_CLAUSE,
+        bounds_clause=BOUNDS_CLAUSE,
+    )
+)
 
 
 @router.get("", response_model=EventFeatureCollection)
 def list_events(
     connection: Annotated[Connection, Depends(get_connection)],
-    current_time: Annotated[datetime, Depends(utc_now)],
+    filters: Annotated[EventFilters, Depends(get_event_filters)],
     bounds: Annotated[BoundingBox | None, Depends(get_bounding_box)],
     zoom: Annotated[int, Query(ge=0, le=22)] = INDIVIDUAL_ZOOM_THRESHOLD,
 ) -> EventFeatureCollection:
-    parameters: dict[str, datetime | float] = {"current_time": current_time}
+    parameters: dict[str, object] = {
+        "starts_after": filters.starts_after,
+        "starts_before": filters.starts_before,
+        "categories": list(filters.categories) or None,
+        "time_of_day_start": filters.time_of_day_start,
+        "time_of_day_end": filters.time_of_day_end,
+    }
 
     if zoom < INDIVIDUAL_ZOOM_THRESHOLD:
         query = AGGREGATED_EVENT_QUERY

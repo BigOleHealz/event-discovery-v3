@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { EventFeatureCollection, EventMapFeatureCollection } from "./events";
@@ -164,6 +164,7 @@ afterEach(() => {
   mapInstances.length = 0;
   viewport = { north: 40.1, south: 39.8, east: -74.9, west: -75.3 };
   zoom = 12;
+  window.history.replaceState(null, "", "/");
 });
 
 function stubEventResponse(
@@ -278,5 +279,89 @@ describe("EventMap", () => {
     expect(pinConstructor).toHaveBeenLastCalledWith(
       expect.objectContaining({ glyph: "2", background: "#59636e" }),
     );
+  });
+
+  it("hydrates every filter from the URL and includes it in the initial request", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/?starts_after=2026-09-01T00%3A00%3A00.000Z&starts_before=2026-09-07T23%3A59%3A59.999Z&time_of_day_start=18%3A00&time_of_day_end=23%3A00&categories=music%2Cscience",
+    );
+    stubEventResponse();
+
+    render(<EventMap apiBaseUrl="." apiKey="test-key" mapId="map-id" />);
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("2 events"));
+    const dateRange = screen.getByRole("group", { name: "Date range" });
+    const timeRange = screen.getByRole("group", { name: "Time of day" });
+    expect(within(dateRange).getByLabelText("From")).toHaveValue("2026-09-01");
+    expect(within(dateRange).getByLabelText("Through")).toHaveValue("2026-09-07");
+    expect(within(timeRange).getByLabelText("From")).toHaveValue("18:00");
+    expect(within(timeRange).getByLabelText("Through")).toHaveValue("23:00");
+    expect(screen.getByRole("listbox", { name: /Categories/ })).toHaveValue([
+      "music",
+      "science",
+    ]);
+
+    const initialRequest = new URL(String(vi.mocked(fetch).mock.calls[0]?.[0]));
+    expect(Object.fromEntries(initialRequest.searchParams)).toEqual({
+      starts_after: "2026-09-01T00:00:00.000Z",
+      starts_before: "2026-09-07T23:59:59.999Z",
+      time_of_day_start: "18:00",
+      time_of_day_end: "23:00",
+      categories: "music,science",
+    });
+  });
+
+  it("syncs sidebar changes to the URL and refetches the current viewport", async () => {
+    stubEventResponse();
+    render(<EventMap apiBaseUrl="." apiKey="test-key" mapId="map-id" />);
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("2 events"));
+    const dateRange = screen.getByRole("group", { name: "Date range" });
+    const timeRange = screen.getByRole("group", { name: "Time of day" });
+    fireEvent.change(within(dateRange).getByLabelText("From"), {
+      target: { value: "2026-09-02" },
+    });
+    fireEvent.change(within(dateRange).getByLabelText("Through"), {
+      target: { value: "2026-09-08" },
+    });
+    fireEvent.change(within(timeRange).getByLabelText("From"), {
+      target: { value: "19:00" },
+    });
+    fireEvent.change(within(timeRange).getByLabelText("Through"), {
+      target: { value: "23:30" },
+    });
+    const categorySelect = screen.getByRole("listbox", { name: /Categories/ });
+    const scienceOption = within(categorySelect).getByRole("option", {
+      name: "science",
+    }) as HTMLOptionElement;
+    scienceOption.selected = true;
+    fireEvent.change(categorySelect);
+
+    await waitFor(() => {
+      expect(window.location.search).toContain("categories=science");
+      expect(fetch).toHaveBeenCalledTimes(6);
+    });
+    expect(Object.fromEntries(new URL(window.location.href).searchParams)).toEqual({
+      starts_after: "2026-09-02T00:00:00.000Z",
+      starts_before: "2026-09-08T23:59:59.999Z",
+      time_of_day_start: "19:00",
+      time_of_day_end: "23:30",
+      categories: "science",
+    });
+    const lastRequest = new URL(String(vi.mocked(fetch).mock.calls.at(-1)?.[0]));
+    expect(Object.fromEntries(lastRequest.searchParams)).toEqual({
+      north: "40.1",
+      south: "39.8",
+      east: "-74.9",
+      west: "-75.3",
+      zoom: "12",
+      starts_after: "2026-09-02T00:00:00.000Z",
+      starts_before: "2026-09-08T23:59:59.999Z",
+      time_of_day_start: "19:00",
+      time_of_day_end: "23:30",
+      categories: "science",
+    });
   });
 });

@@ -36,7 +36,7 @@ def migrated_engine(database_url: str) -> Iterator[sa.Engine]:
 
 async def request_events(
     application: FastAPI,
-    params: dict[str, float | int] | None = None,
+    params: dict[str, str | float | int] | None = None,
 ) -> Response:
     transport = ASGITransport(app=application)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -49,6 +49,9 @@ def insert_spatial_event(
     title: str,
     longitude: float,
     latitude: float,
+    starts_at: str = "2026-09-01T12:00:00Z",
+    timezone: str = "America/New_York",
+    primary_category: str = "community",
 ) -> None:
     connection.execute(
         sa.text(
@@ -56,19 +59,31 @@ def insert_spatial_event(
             INSERT INTO canonical_event (
                 id, title, starts_at, timezone, location, primary_category
             ) VALUES (
-                :id, :title, '2026-09-01T12:00:00Z', 'America/New_York',
+                :id, :title, :starts_at, :timezone,
                 ST_SetSRID(ST_MakePoint(:longitude, :latitude), 4326)::geography,
-                'community'
+                :primary_category
             )
             """
         ),
         {
             "id": uuid4(),
             "title": title,
+            "starts_at": starts_at,
+            "timezone": timezone,
             "longitude": longitude,
             "latitude": latitude,
+            "primary_category": primary_category,
         },
     )
+
+
+def empty_filter_parameters() -> dict[str, object]:
+    return {
+        "starts_before": None,
+        "categories": None,
+        "time_of_day_start": None,
+        "time_of_day_end": None,
+    }
 
 
 def nested_index_names(value: object) -> set[str]:
@@ -251,6 +266,117 @@ def test_bounding_box_requires_all_coordinates(migrated_engine: sa.Engine) -> No
     assert response.json()["detail"] == "north, south, east, and west must be supplied together"
 
 
+def test_event_filters_apply_dates_categories_and_each_event_timezone(
+    migrated_engine: sa.Engine,
+) -> None:
+    with migrated_engine.begin() as connection:
+        insert_spatial_event(
+            connection,
+            title="Philadelphia Evening Music",
+            longitude=-75.16,
+            latitude=39.95,
+            starts_at="2026-09-02T23:30:00Z",
+            primary_category="music",
+        )
+        insert_spatial_event(
+            connection,
+            title="Chicago Evening Music",
+            longitude=-75.17,
+            latitude=39.96,
+            starts_at="2026-09-03T00:30:00Z",
+            timezone="America/Chicago",
+            primary_category="music",
+        )
+        insert_spatial_event(
+            connection,
+            title="Evening Science",
+            longitude=-75.18,
+            latitude=39.97,
+            starts_at="2026-09-02T23:30:00Z",
+            primary_category="science",
+        )
+        insert_spatial_event(
+            connection,
+            title="Philadelphia Lunchtime Music",
+            longitude=-75.19,
+            latitude=39.98,
+            starts_at="2026-09-02T16:00:00Z",
+            primary_category="music",
+        )
+
+    def override_connection() -> Iterator[Connection]:
+        with migrated_engine.connect() as connection:
+            yield connection
+
+    app.dependency_overrides[get_connection] = override_connection
+    app.dependency_overrides[utc_now] = lambda: datetime.fromisoformat("2026-08-27T12:00:00+00:00")
+    parameters = {
+        "starts_after": "2026-09-02T00:00:00Z",
+        "starts_before": "2026-09-04T00:00:00Z",
+        "categories": "music",
+        "time_of_day_start": "19:00",
+        "time_of_day_end": "20:00",
+    }
+    try:
+        individual_response = anyio.run(request_events, app, parameters)
+        aggregate_response = anyio.run(request_events, app, {**parameters, "zoom": 12})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert individual_response.status_code == 200
+    titles = {
+        feature["properties"]["title"] for feature in individual_response.json()["features"]
+    }
+    assert {"Philadelphia Evening Music", "Chicago Evening Music"} <= titles
+    assert "Evening Science" not in titles
+    assert "Philadelphia Lunchtime Music" not in titles
+    assert aggregate_response.status_code == 200
+    assert sum(
+        cell["properties"]["count"] for cell in aggregate_response.json()["features"]
+    ) == 2
+
+
+def test_event_filters_support_an_overnight_local_time_range(
+    migrated_engine: sa.Engine,
+) -> None:
+    with migrated_engine.begin() as connection:
+        for title, starts_at in (
+            ("Late Night Fixture", "2026-09-02T03:30:00Z"),
+            ("Early Morning Fixture", "2026-09-02T05:30:00Z"),
+            ("Midday Fixture", "2026-09-02T16:00:00Z"),
+        ):
+            insert_spatial_event(
+                connection,
+                title=title,
+                longitude=-75.16,
+                latitude=39.95,
+                starts_at=starts_at,
+                primary_category="overnight-fixture",
+            )
+
+    def override_connection() -> Iterator[Connection]:
+        with migrated_engine.connect() as connection:
+            yield connection
+
+    app.dependency_overrides[get_connection] = override_connection
+    try:
+        response = anyio.run(
+            request_events,
+            app,
+            {
+                "categories": "overnight-fixture",
+                "time_of_day_start": "22:00",
+                "time_of_day_end": "02:00",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    titles = {feature["properties"]["title"] for feature in response.json()["features"]}
+    assert titles == {"Late Night Fixture", "Early Morning Fixture"}
+
+
 def test_grid_aggregation_counts_sum_to_the_underlying_events(
     migrated_engine: sa.Engine,
 ) -> None:
@@ -328,11 +454,12 @@ def test_bounding_query_plan_uses_the_postgis_gist_index(
         plan = connection.execute(
             sa.text(f"EXPLAIN (FORMAT JSON) {BOUNDED_EVENT_QUERY.text}"),
             {
-                "current_time": datetime.fromisoformat("2026-08-27T12:00:00+00:00"),
+                "starts_after": datetime.fromisoformat("2026-08-27T12:00:00+00:00"),
                 "north": 40.10,
                 "south": 39.80,
                 "east": -74.90,
                 "west": -75.25,
+                **empty_filter_parameters(),
             },
         ).scalar_one()
 
@@ -370,12 +497,13 @@ def test_grid_aggregation_query_plan_uses_the_postgis_gist_index(
         plan = connection.execute(
             sa.text(f"EXPLAIN (FORMAT JSON) {AGGREGATED_BOUNDED_EVENT_QUERY.text}"),
             {
-                "current_time": datetime.fromisoformat("2026-08-27T12:00:00+00:00"),
+                "starts_after": datetime.fromisoformat("2026-08-27T12:00:00+00:00"),
                 "north": 40.10,
                 "south": 39.80,
                 "east": -74.90,
                 "west": -75.25,
                 "cell_size": grid_cell_size(12),
+                **empty_filter_parameters(),
             },
         ).scalar_one()
 

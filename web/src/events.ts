@@ -65,6 +65,14 @@ export interface EventViewport {
   zoom: number;
 }
 
+export interface EventFilters {
+  startsAfter: string | null;
+  startsBefore: string | null;
+  timeOfDayStart: string;
+  timeOfDayEnd: string;
+  categories: string[];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -169,6 +177,7 @@ export async function fetchEvents(
   apiBaseUrl: string,
   signal: AbortSignal,
   viewport?: EventViewport,
+  filters?: EventFilters,
 ): Promise<EventMapFeature[]> {
   const endpoint = `${apiBaseUrl.replace(/\/$/, "")}/api/events`;
   const url = new URL(endpoint, window.location.href);
@@ -178,6 +187,23 @@ export async function fetchEvents(
     url.searchParams.set("east", String(viewport.east));
     url.searchParams.set("west", String(viewport.west));
     url.searchParams.set("zoom", String(viewport.zoom));
+  }
+  if (filters !== undefined) {
+    if (filters.startsAfter !== null) {
+      url.searchParams.set("starts_after", filters.startsAfter);
+    }
+    if (filters.startsBefore !== null) {
+      url.searchParams.set("starts_before", filters.startsBefore);
+    }
+    if (filters.timeOfDayStart !== "") {
+      url.searchParams.set("time_of_day_start", filters.timeOfDayStart);
+    }
+    if (filters.timeOfDayEnd !== "") {
+      url.searchParams.set("time_of_day_end", filters.timeOfDayEnd);
+    }
+    if (filters.categories.length > 0) {
+      url.searchParams.set("categories", filters.categories.join(","));
+    }
   }
   const response = await fetch(url, { signal });
   if (!response.ok) {

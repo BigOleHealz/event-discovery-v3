@@ -72,6 +72,131 @@ a {
   letter-spacing: -0.045em;
 }
 
+.filter-sidebar {
+  position: absolute;
+  z-index: 3;
+  top: clamp(10rem, 19vw, 13rem);
+  left: clamp(1rem, 3vw, 2rem);
+  display: grid;
+  width: min(25rem, calc(100vw - 2rem));
+  max-height: calc(100vh - clamp(11rem, 22vw, 15rem));
+  padding: 1rem 1.1rem 1.15rem;
+  overflow-y: auto;
+  gap: 1rem;
+  border: 1px solid rgb(255 255 255 / 58%);
+  border-radius: 1.15rem;
+  background: rgb(250 247 238 / 94%);
+  box-shadow: 0 1rem 3rem rgb(42 58 47 / 20%);
+  backdrop-filter: blur(1rem);
+}
+
+.filter-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.filter-heading h2 {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.55rem;
+  font-weight: 500;
+  letter-spacing: -0.035em;
+}
+
+.filter-heading .eyebrow {
+  margin-bottom: 0.2rem;
+}
+
+.filter-clear {
+  padding: 0.45rem 0.65rem;
+  border: 1px solid #cfc8b9;
+  border-radius: 999px;
+  color: #823724;
+  background: #fffaf0;
+  font-size: 0.75rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.filter-clear:hover,
+.filter-clear:focus-visible {
+  border-color: #a84631;
+  background: #f6e4dc;
+}
+
+.filter-group {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  margin: 0;
+}
+
+.filter-group legend,
+.filter-category > span:first-child {
+  padding: 0;
+  margin-bottom: 0.45rem;
+  color: #33463a;
+  font-size: 0.76rem;
+  font-weight: 850;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.filter-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.filter-pair label,
+.filter-category {
+  display: grid;
+  gap: 0.3rem;
+  color: #5b685e;
+  font-size: 0.74rem;
+  font-weight: 750;
+}
+
+.filter-group input,
+.filter-group select {
+  width: 100%;
+  border: 1px solid #cbc4b5;
+  border-radius: 0.65rem;
+  color: #18231b;
+  background: #fffdf7;
+}
+
+.filter-group input {
+  min-height: 2.35rem;
+  padding: 0.48rem 0.55rem;
+}
+
+.filter-group select {
+  min-height: 5.7rem;
+  padding: 0.35rem;
+}
+
+.filter-group option {
+  padding: 0.36rem 0.45rem;
+  border-radius: 0.35rem;
+}
+
+.filter-group input:focus-visible,
+.filter-group select:focus-visible {
+  border-color: #a84631;
+  outline: 0.16rem solid rgb(168 70 49 / 20%);
+}
+
+.filter-hint {
+  margin: 0.4rem 0 0;
+  color: #727d74;
+  font-size: 0.7rem;
+  font-weight: 550;
+  line-height: 1.35;
+}
+
 .eyebrow {
   margin: 0 0 0.45rem;
   color: #a84631;

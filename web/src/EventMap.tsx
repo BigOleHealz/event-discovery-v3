@@ -3,7 +3,9 @@ import type { MarkerClusterer as MarkerClustererInstance } from "@googlemaps/mar
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { EventDetailPanel } from "./EventDetailPanel";
-import type { EventFeature, EventMapFeature, EventViewport } from "./events";
+import { EventFilterSidebar } from "./EventFilterSidebar";
+import { readEventFilters, replaceEventFilterUrl } from "./eventFilterState";
+import type { EventFeature, EventFilters, EventMapFeature, EventViewport } from "./events";
 import { fetchEvents, isAggregatedGridCell } from "./events";
 
 const PHILADELPHIA_CENTER: google.maps.LatLngLiteral = { lat: 39.9526, lng: -75.1652 };
@@ -28,12 +30,34 @@ interface EventMapProps {
   mapId: string;
 }
 
+function categoriesIn(features: EventMapFeature[]): string[] {
+  const categories = new Set<string>();
+  for (const feature of features) {
+    if (isAggregatedGridCell(feature)) {
+      for (const category of feature.properties.top_categories) {
+        categories.add(category);
+      }
+    } else if (feature.properties.primary_category !== null) {
+      categories.add(feature.properties.primary_category);
+    }
+  }
+  return Array.from(categories).sort();
+}
+
 export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
   const mapElement = useRef<HTMLDivElement>(null);
+  const [filters, setFilters] = useState<EventFilters>(() => readEventFilters());
+  const filtersRef = useRef(filters);
+  const refetchViewportRef = useRef<(() => Promise<void>) | null>(null);
+  const [availableCategories, setAvailableCategories] = useState<string[]>(filters.categories);
   const [eventCount, setEventCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<EventFeature | null>(null);
   const closeDetails = useCallback(() => setSelectedEvent(null), []);
+  const changeFilters = useCallback((nextFilters: EventFilters) => {
+    setSelectedEvent(null);
+    setFilters(nextFilters);
+  }, []);
 
   useEffect(() => {
     let requestController = new AbortController();
@@ -61,7 +85,7 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
     async function initializeMap(): Promise<void> {
       configureLoader(apiKey);
       const [events, mapsLibrary, markerLibrary, { MarkerClusterer }] = await Promise.all([
-        fetchEvents(apiBaseUrl, requestController.signal),
+        fetchEvents(apiBaseUrl, requestController.signal, undefined, filtersRef.current),
         importLibrary("maps") as Promise<google.maps.MapsLibrary>,
         importLibrary("marker") as Promise<google.maps.MarkerLibrary>,
         import("@googlemaps/markerclusterer"),
@@ -82,6 +106,15 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
 
       function renderEvents(nextEvents: EventMapFeature[]): void {
         clearMarkers();
+        const discoveredCategories = categoriesIn(nextEvents);
+        if (discoveredCategories.length > 0) {
+          setAvailableCategories((currentCategories) => {
+            const nextCategories = new Set([...currentCategories, ...discoveredCategories]);
+            return nextCategories.size === currentCategories.length
+              ? currentCategories
+              : Array.from(nextCategories).sort();
+          });
+        }
         const eventMarkers: google.maps.marker.AdvancedMarkerElement[] = [];
         for (const event of nextEvents) {
           const [longitude, latitude] = event.geometry.coordinates;
@@ -141,6 +174,7 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
             apiBaseUrl,
             requestController.signal,
             viewport,
+            filtersRef.current,
           );
           if (!cancelled) {
             renderEvents(nextEvents);
@@ -155,6 +189,8 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
           }
         }
       }
+
+      refetchViewportRef.current = refetchViewport;
 
       renderEvents(events);
       idleListener = map.addListener("idle", () => {
@@ -182,12 +218,32 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
         clearTimeout(viewportTimer);
       }
       clearMarkers();
+      refetchViewportRef.current = null;
     };
   }, [apiBaseUrl, apiKey, mapId]);
+
+  useEffect(() => {
+    filtersRef.current = filters;
+    replaceEventFilterUrl(filters);
+    void refetchViewportRef.current?.();
+  }, [filters]);
+
+  useEffect(() => {
+    function restoreFiltersFromUrl(): void {
+      changeFilters(readEventFilters());
+    }
+    window.addEventListener("popstate", restoreFiltersFromUrl);
+    return () => window.removeEventListener("popstate", restoreFiltersFromUrl);
+  }, [changeFilters]);
 
   return (
     <section className="map-stage" aria-label="Philadelphia event map">
       <div ref={mapElement} className="map-canvas" data-testid="event-map" />
+      <EventFilterSidebar
+        availableCategories={availableCategories}
+        filters={filters}
+        onChange={changeFilters}
+      />
       <div className="map-status" role="status">
         {error ?? (eventCount === null ? "Loading Philadelphia events…" : `${eventCount} events`)}
       </div>
