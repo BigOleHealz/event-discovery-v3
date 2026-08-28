@@ -106,11 +106,14 @@ DAG, which is why restore means re-running a DAG rather than a backup restore, a
 ## Where things stand
 
 Run `git log --oneline -20` rather than trusting any status line in a document — including
-this one. As of writing, the project was on `phase-3-search` with 3a and 3b committed, and
-`ingest.market` / `ingest.crawl_target` (2f) had landed.
+this one. As of writing, the project was on `phase-3-search` with 3a, 3b and 3c committed,
+and `ingest.market` / `ingest.crawl_target` (2f) had landed. Sub-phase boundaries are not
+readable from commit subjects: 3a and 3b arrived in one commit that also rewrote
+`AGENTS.md`. Read diffs, not subjects.
 
-§14 lists six open questions. None were answered as of writing. Two are load-bearing and
-should be settled before the sub-phase that depends on them:
+§14 lists five open questions. The timezone question was answered by implementation and
+moved to §13. Two of the remaining five are load-bearing and should be settled before the
+sub-phase that depends on them:
 
 - **Recurring events** (one canonical with a recurrence rule, or one per occurrence) —
   changes the dedup time-window logic. Settle before 4d.
