@@ -96,3 +96,5 @@ which markets and crawl targets are enabled — is application data in `ingest.m
 If you find yourself adding `EVENTBRITE_CATEGORIES` or a comma-separated location list to
 `.env`, stop: that belongs in `ingest.crawl_target`. Enabling a category in one market must
 not silently enable it everywhere.
+
+@RTK.md
