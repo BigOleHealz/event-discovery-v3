@@ -38,6 +38,41 @@ export interface EventFeatureCollection {
   features: EventFeature[];
 }
 
+export interface GridCellProperties {
+  count: number;
+  top_categories: string[];
+}
+
+export interface GridCellFeature {
+  type: "Feature";
+  id: string;
+  geometry: PointGeometry;
+  properties: GridCellProperties;
+}
+
+export type EventMapFeature = EventFeature | GridCellFeature;
+
+export interface EventMapFeatureCollection {
+  type: "FeatureCollection";
+  features: EventMapFeature[];
+}
+
+export interface EventViewport {
+  north: number;
+  south: number;
+  east: number;
+  west: number;
+  zoom: number;
+}
+
+export interface EventFilters {
+  startsAfter: string | null;
+  startsBefore: string | null;
+  timeOfDayStart: string;
+  timeOfDayEnd: string;
+  categories: string[];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -107,23 +142,76 @@ function isEventFeature(value: unknown): value is EventFeature {
   );
 }
 
-function isEventFeatureCollection(value: unknown): value is EventFeatureCollection {
+function isGridCellFeature(value: unknown): value is GridCellFeature {
+  if (
+    !isRecord(value) ||
+    value.type !== "Feature" ||
+    typeof value.id !== "string" ||
+    !isPointGeometry(value.geometry) ||
+    !isRecord(value.properties)
+  ) {
+    return false;
+  }
+  return (
+    Number.isInteger(value.properties.count) &&
+    (value.properties.count as number) > 0 &&
+    Array.isArray(value.properties.top_categories) &&
+    value.properties.top_categories.every((category) => typeof category === "string")
+  );
+}
+
+export function isAggregatedGridCell(feature: EventMapFeature): feature is GridCellFeature {
+  return "count" in feature.properties;
+}
+
+function isEventMapFeatureCollection(value: unknown): value is EventMapFeatureCollection {
   return (
     isRecord(value) &&
     value.type === "FeatureCollection" &&
     Array.isArray(value.features) &&
-    value.features.every(isEventFeature)
+    value.features.every((feature) => isEventFeature(feature) || isGridCellFeature(feature))
   );
 }
 
-export async function fetchEvents(apiBaseUrl: string, signal: AbortSignal): Promise<EventFeature[]> {
-  const response = await fetch(`${apiBaseUrl}/api/events`, { signal });
+export async function fetchEvents(
+  apiBaseUrl: string,
+  signal: AbortSignal,
+  viewport?: EventViewport,
+  filters?: EventFilters,
+): Promise<EventMapFeature[]> {
+  const endpoint = `${apiBaseUrl.replace(/\/$/, "")}/api/events`;
+  const url = new URL(endpoint, window.location.href);
+  if (viewport !== undefined) {
+    url.searchParams.set("north", String(viewport.north));
+    url.searchParams.set("south", String(viewport.south));
+    url.searchParams.set("east", String(viewport.east));
+    url.searchParams.set("west", String(viewport.west));
+    url.searchParams.set("zoom", String(viewport.zoom));
+  }
+  if (filters !== undefined) {
+    if (filters.startsAfter !== null) {
+      url.searchParams.set("starts_after", filters.startsAfter);
+    }
+    if (filters.startsBefore !== null) {
+      url.searchParams.set("starts_before", filters.startsBefore);
+    }
+    if (filters.timeOfDayStart !== "") {
+      url.searchParams.set("time_of_day_start", filters.timeOfDayStart);
+    }
+    if (filters.timeOfDayEnd !== "") {
+      url.searchParams.set("time_of_day_end", filters.timeOfDayEnd);
+    }
+    if (filters.categories.length > 0) {
+      url.searchParams.set("categories", filters.categories.join(","));
+    }
+  }
+  const response = await fetch(url, { signal });
   if (!response.ok) {
     throw new Error(`Event request failed with status ${response.status}`);
   }
 
   const payload: unknown = await response.json();
-  if (!isEventFeatureCollection(payload)) {
+  if (!isEventMapFeatureCollection(payload)) {
     throw new Error("Event response is not a GeoJSON FeatureCollection");
   }
   return payload.features;

@@ -15,6 +15,7 @@ from sqlalchemy import Connection
 
 from app.clock import utc_now
 from app.database import get_connection
+from app.events import AGGREGATED_BOUNDED_EVENT_QUERY, BOUNDED_EVENT_QUERY, grid_cell_size
 from app.main import app
 from app.seed import EVENTS, seed_database
 
@@ -33,10 +34,70 @@ def migrated_engine(database_url: str) -> Iterator[sa.Engine]:
         command.downgrade(config, "base")
 
 
-async def request_events(application: FastAPI) -> Response:
+async def request_events(
+    application: FastAPI,
+    params: dict[str, str | float | int] | None = None,
+) -> Response:
     transport = ASGITransport(app=application)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        return await client.get("/api/events")
+        return await client.get("/api/events", params=params)
+
+
+def insert_spatial_event(
+    connection: Connection,
+    *,
+    title: str,
+    longitude: float,
+    latitude: float,
+    starts_at: str = "2026-09-01T12:00:00Z",
+    timezone: str = "America/New_York",
+    primary_category: str = "community",
+) -> None:
+    connection.execute(
+        sa.text(
+            """
+            INSERT INTO canonical_event (
+                id, title, starts_at, timezone, location, primary_category
+            ) VALUES (
+                :id, :title, :starts_at, :timezone,
+                ST_SetSRID(ST_MakePoint(:longitude, :latitude), 4326)::geography,
+                :primary_category
+            )
+            """
+        ),
+        {
+            "id": uuid4(),
+            "title": title,
+            "starts_at": starts_at,
+            "timezone": timezone,
+            "longitude": longitude,
+            "latitude": latitude,
+            "primary_category": primary_category,
+        },
+    )
+
+
+def empty_filter_parameters() -> dict[str, object]:
+    return {
+        "starts_before": None,
+        "categories": None,
+        "time_of_day_start": None,
+        "time_of_day_end": None,
+    }
+
+
+def nested_index_names(value: object) -> set[str]:
+    names: set[str] = set()
+    if isinstance(value, dict):
+        index_name = value.get("Index Name")
+        if isinstance(index_name, str):
+            names.add(index_name)
+        for child in value.values():
+            names.update(nested_index_names(child))
+    elif isinstance(value, list):
+        for child in value:
+            names.update(nested_index_names(child))
+    return names
 
 
 def test_events_are_valid_geojson_with_longitude_first(migrated_engine: sa.Engine) -> None:
@@ -71,7 +132,7 @@ def test_events_are_valid_geojson_with_longitude_first(migrated_engine: sa.Engin
     app.dependency_overrides[get_connection] = override_connection
     app.dependency_overrides[utc_now] = lambda: datetime.fromisoformat("2026-08-27T12:00:00+00:00")
     try:
-        response = anyio.run(request_events, app)
+        response = anyio.run(request_events, app, {"zoom": 13})
     finally:
         app.dependency_overrides.clear()
 
@@ -99,3 +160,351 @@ def test_events_are_valid_geojson_with_longitude_first(migrated_engine: sa.Engin
         if feature["properties"]["title"] == "Science After Hours: City Lights"
     )
     assert science["properties"]["registration_links"] == []
+
+
+def test_bounding_box_includes_events_on_both_sides_of_a_state_line(
+    migrated_engine: sa.Engine,
+) -> None:
+    with migrated_engine.begin() as connection:
+        insert_spatial_event(
+            connection,
+            title="Pennsylvania River Event",
+            longitude=-75.13,
+            latitude=39.95,
+        )
+        insert_spatial_event(
+            connection,
+            title="New Jersey River Event",
+            longitude=-75.02,
+            latitude=39.95,
+        )
+        insert_spatial_event(
+            connection,
+            title="Outside Viewport Event",
+            longitude=-74.60,
+            latitude=39.95,
+        )
+
+    def override_connection() -> Iterator[Connection]:
+        with migrated_engine.connect() as connection:
+            yield connection
+
+    app.dependency_overrides[get_connection] = override_connection
+    app.dependency_overrides[utc_now] = lambda: datetime.fromisoformat("2026-08-27T12:00:00+00:00")
+    try:
+        response = anyio.run(
+            request_events,
+            app,
+            {"north": 40.10, "south": 39.80, "east": -74.90, "west": -75.25},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    titles = {feature["properties"]["title"] for feature in response.json()["features"]}
+    assert "Pennsylvania River Event" in titles
+    assert "New Jersey River Event" in titles
+    assert "Outside Viewport Event" not in titles
+
+
+def test_bounding_box_supports_an_antimeridian_crossing(
+    migrated_engine: sa.Engine,
+) -> None:
+    with migrated_engine.begin() as connection:
+        insert_spatial_event(
+            connection,
+            title="West of Date Line",
+            longitude=179.0,
+            latitude=0.0,
+        )
+        insert_spatial_event(
+            connection,
+            title="East of Date Line",
+            longitude=-179.0,
+            latitude=0.0,
+        )
+        insert_spatial_event(
+            connection,
+            title="Greenwich Event",
+            longitude=0.0,
+            latitude=0.0,
+        )
+
+    def override_connection() -> Iterator[Connection]:
+        with migrated_engine.connect() as connection:
+            yield connection
+
+    app.dependency_overrides[get_connection] = override_connection
+    app.dependency_overrides[utc_now] = lambda: datetime.fromisoformat("2026-08-27T12:00:00+00:00")
+    try:
+        response = anyio.run(
+            request_events,
+            app,
+            {"north": 10.0, "south": -10.0, "east": -170.0, "west": 170.0},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    titles = {feature["properties"]["title"] for feature in response.json()["features"]}
+    assert {"West of Date Line", "East of Date Line"} <= titles
+    assert "Greenwich Event" not in titles
+
+
+def test_bounding_box_requires_all_coordinates(migrated_engine: sa.Engine) -> None:
+    def override_connection() -> Iterator[Connection]:
+        with migrated_engine.connect() as connection:
+            yield connection
+
+    app.dependency_overrides[get_connection] = override_connection
+    try:
+        response = anyio.run(request_events, app, {"north": 40.0, "south": 39.0})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "north, south, east, and west must be supplied together"
+
+
+def test_event_filters_apply_dates_categories_and_each_event_timezone(
+    migrated_engine: sa.Engine,
+) -> None:
+    with migrated_engine.begin() as connection:
+        insert_spatial_event(
+            connection,
+            title="Philadelphia Evening Music",
+            longitude=-75.16,
+            latitude=39.95,
+            starts_at="2026-09-02T23:30:00Z",
+            primary_category="music",
+        )
+        insert_spatial_event(
+            connection,
+            title="Chicago Evening Music",
+            longitude=-75.17,
+            latitude=39.96,
+            starts_at="2026-09-03T00:30:00Z",
+            timezone="America/Chicago",
+            primary_category="music",
+        )
+        insert_spatial_event(
+            connection,
+            title="Evening Science",
+            longitude=-75.18,
+            latitude=39.97,
+            starts_at="2026-09-02T23:30:00Z",
+            primary_category="science",
+        )
+        insert_spatial_event(
+            connection,
+            title="Philadelphia Lunchtime Music",
+            longitude=-75.19,
+            latitude=39.98,
+            starts_at="2026-09-02T16:00:00Z",
+            primary_category="music",
+        )
+
+    def override_connection() -> Iterator[Connection]:
+        with migrated_engine.connect() as connection:
+            yield connection
+
+    app.dependency_overrides[get_connection] = override_connection
+    app.dependency_overrides[utc_now] = lambda: datetime.fromisoformat("2026-08-27T12:00:00+00:00")
+    parameters = {
+        "starts_after": "2026-09-02T00:00:00Z",
+        "starts_before": "2026-09-04T00:00:00Z",
+        "categories": "music",
+        "time_of_day_start": "19:00",
+        "time_of_day_end": "20:00",
+    }
+    try:
+        individual_response = anyio.run(request_events, app, parameters)
+        aggregate_response = anyio.run(request_events, app, {**parameters, "zoom": 12})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert individual_response.status_code == 200
+    titles = {
+        feature["properties"]["title"] for feature in individual_response.json()["features"]
+    }
+    assert {"Philadelphia Evening Music", "Chicago Evening Music"} <= titles
+    assert "Evening Science" not in titles
+    assert "Philadelphia Lunchtime Music" not in titles
+    assert aggregate_response.status_code == 200
+    assert sum(
+        cell["properties"]["count"] for cell in aggregate_response.json()["features"]
+    ) == 2
+
+
+def test_event_filters_support_an_overnight_local_time_range(
+    migrated_engine: sa.Engine,
+) -> None:
+    with migrated_engine.begin() as connection:
+        for title, starts_at in (
+            ("Late Night Fixture", "2026-09-02T03:30:00Z"),
+            ("Early Morning Fixture", "2026-09-02T05:30:00Z"),
+            ("Midday Fixture", "2026-09-02T16:00:00Z"),
+        ):
+            insert_spatial_event(
+                connection,
+                title=title,
+                longitude=-75.16,
+                latitude=39.95,
+                starts_at=starts_at,
+                primary_category="overnight-fixture",
+            )
+
+    def override_connection() -> Iterator[Connection]:
+        with migrated_engine.connect() as connection:
+            yield connection
+
+    app.dependency_overrides[get_connection] = override_connection
+    try:
+        response = anyio.run(
+            request_events,
+            app,
+            {
+                "categories": "overnight-fixture",
+                "time_of_day_start": "22:00",
+                "time_of_day_end": "02:00",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    titles = {feature["properties"]["title"] for feature in response.json()["features"]}
+    assert titles == {"Late Night Fixture", "Early Morning Fixture"}
+
+
+def test_grid_aggregation_counts_sum_to_the_underlying_events(
+    migrated_engine: sa.Engine,
+) -> None:
+    bounds = {"north": 40.10, "south": 39.80, "east": -74.90, "west": -75.30}
+    current_time = datetime.fromisoformat("2026-08-27T12:00:00+00:00")
+    with migrated_engine.begin() as connection:
+        for fixture_number in range(3):
+            insert_spatial_event(
+                connection,
+                title=f"Grid fixture {fixture_number}",
+                longitude=-75.1652,
+                latitude=39.9526,
+            )
+        underlying_event_count = connection.execute(
+            sa.text(
+                """
+                SELECT COUNT(*)
+                FROM canonical_event AS event
+                WHERE event.archived_at IS NULL
+                  AND event.starts_at >= :current_time
+                  AND event.location && ST_MakeEnvelope(
+                      :west, :south, :east, :north, 4326
+                  )::geography
+                """
+            ),
+            {"current_time": current_time, **bounds},
+        ).scalar_one()
+
+    def override_connection() -> Iterator[Connection]:
+        with migrated_engine.connect() as connection:
+            yield connection
+
+    app.dependency_overrides[get_connection] = override_connection
+    app.dependency_overrides[utc_now] = lambda: current_time
+    try:
+        response = anyio.run(request_events, app, {**bounds, "zoom": 12})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    cells = response.json()["features"]
+    assert sum(cell["properties"]["count"] for cell in cells) == underlying_event_count
+    assert any(cell["properties"]["count"] >= 3 for cell in cells)
+    assert all(len(cell["properties"]["top_categories"]) <= 3 for cell in cells)
+
+
+def test_bounding_query_plan_uses_the_postgis_gist_index(
+    migrated_engine: sa.Engine,
+) -> None:
+    with migrated_engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO canonical_event (
+                    id, title, starts_at, timezone, location, primary_category
+                )
+                SELECT
+                    gen_random_uuid(),
+                    'Query plan fixture ' || fixture_number,
+                    '2030-01-01T12:00:00Z',
+                    'UTC',
+                    ST_SetSRID(
+                        ST_MakePoint(
+                            -120 + (fixture_number % 1000) * 0.001,
+                            35 + (fixture_number % 500) * 0.001
+                        ),
+                        4326
+                    )::geography,
+                    'fixture'
+                FROM generate_series(1, 5000) AS fixture_number
+                """
+            )
+        )
+        connection.execute(sa.text("ANALYZE canonical_event"))
+        plan = connection.execute(
+            sa.text(f"EXPLAIN (FORMAT JSON) {BOUNDED_EVENT_QUERY.text}"),
+            {
+                "starts_after": datetime.fromisoformat("2026-08-27T12:00:00+00:00"),
+                "north": 40.10,
+                "south": 39.80,
+                "east": -74.90,
+                "west": -75.25,
+                **empty_filter_parameters(),
+            },
+        ).scalar_one()
+
+    assert "ix_canonical_event_location" in nested_index_names(plan)
+
+
+def test_grid_aggregation_query_plan_uses_the_postgis_gist_index(
+    migrated_engine: sa.Engine,
+) -> None:
+    with migrated_engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO canonical_event (
+                    id, title, starts_at, timezone, location, primary_category
+                )
+                SELECT
+                    gen_random_uuid(),
+                    'Grid plan fixture ' || fixture_number,
+                    '2030-01-01T12:00:00Z',
+                    'UTC',
+                    ST_SetSRID(
+                        ST_MakePoint(
+                            -120 + (fixture_number % 1000) * 0.001,
+                            35 + (fixture_number % 500) * 0.001
+                        ),
+                        4326
+                    )::geography,
+                    'fixture'
+                FROM generate_series(1, 5000) AS fixture_number
+                """
+            )
+        )
+        connection.execute(sa.text("ANALYZE canonical_event"))
+        plan = connection.execute(
+            sa.text(f"EXPLAIN (FORMAT JSON) {AGGREGATED_BOUNDED_EVENT_QUERY.text}"),
+            {
+                "starts_after": datetime.fromisoformat("2026-08-27T12:00:00+00:00"),
+                "north": 40.10,
+                "south": 39.80,
+                "east": -74.90,
+                "west": -75.25,
+                "cell_size": grid_cell_size(12),
+                **empty_filter_parameters(),
+            },
+        ).scalar_one()
+
+    assert "ix_canonical_event_location" in nested_index_names(plan)

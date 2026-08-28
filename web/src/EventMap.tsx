@@ -1,11 +1,16 @@
 import { importLibrary, setOptions } from "@googlemaps/js-api-loader";
+import type { MarkerClusterer as MarkerClustererInstance } from "@googlemaps/markerclusterer";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { EventDetailPanel } from "./EventDetailPanel";
-import type { EventFeature } from "./events";
-import { fetchEvents } from "./events";
+import { EventFilterSidebar } from "./EventFilterSidebar";
+import { AGGREGATED_CELL_PIN_STYLE, pinStyleForCategory } from "./categoryPinStyle";
+import { readEventFilters, replaceEventFilterUrl } from "./eventFilterState";
+import type { EventFeature, EventFilters, EventMapFeature, EventViewport } from "./events";
+import { fetchEvents, isAggregatedGridCell } from "./events";
 
 const PHILADELPHIA_CENTER: google.maps.LatLngLiteral = { lat: 39.9526, lng: -75.1652 };
+const VIEWPORT_FETCH_DEBOUNCE_MS = 300;
 
 let configuredApiKey: string | null = null;
 
@@ -26,25 +31,65 @@ interface EventMapProps {
   mapId: string;
 }
 
+function categoriesIn(features: EventMapFeature[]): string[] {
+  const categories = new Set<string>();
+  for (const feature of features) {
+    if (isAggregatedGridCell(feature)) {
+      for (const category of feature.properties.top_categories) {
+        categories.add(category);
+      }
+    } else if (feature.properties.primary_category !== null) {
+      categories.add(feature.properties.primary_category);
+    }
+  }
+  return Array.from(categories).sort();
+}
+
 export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
   const mapElement = useRef<HTMLDivElement>(null);
+  const [filters, setFilters] = useState<EventFilters>(() => readEventFilters());
+  const filtersRef = useRef(filters);
+  const refetchViewportRef = useRef<(() => Promise<void>) | null>(null);
+  const [availableCategories, setAvailableCategories] = useState<string[]>(filters.categories);
   const [eventCount, setEventCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<EventFeature | null>(null);
   const closeDetails = useCallback(() => setSelectedEvent(null), []);
+  const changeFilters = useCallback((nextFilters: EventFilters) => {
+    setSelectedEvent(null);
+    setFilters(nextFilters);
+  }, []);
 
   useEffect(() => {
-    const controller = new AbortController();
-    const markers: google.maps.marker.AdvancedMarkerElement[] = [];
-    const markerListeners: google.maps.MapsEventListener[] = [];
+    let requestController = new AbortController();
+    let markers: google.maps.marker.AdvancedMarkerElement[] = [];
+    let markerListeners: google.maps.MapsEventListener[] = [];
+    let markerClusterer: MarkerClustererInstance | null = null;
+    let idleListener: google.maps.MapsEventListener | null = null;
+    let viewportTimer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
+
+    function clearMarkers(): void {
+      markerClusterer?.clearMarkers(true);
+      markerClusterer?.setMap(null);
+      markerClusterer = null;
+      for (const listener of markerListeners) {
+        listener.remove();
+      }
+      for (const marker of markers) {
+        marker.map = null;
+      }
+      markerListeners = [];
+      markers = [];
+    }
 
     async function initializeMap(): Promise<void> {
       configureLoader(apiKey);
-      const [events, mapsLibrary, markerLibrary] = await Promise.all([
-        fetchEvents(apiBaseUrl, controller.signal),
+      const [events, mapsLibrary, markerLibrary, { MarkerClusterer }] = await Promise.all([
+        fetchEvents(apiBaseUrl, requestController.signal, undefined, filtersRef.current),
         importLibrary("maps") as Promise<google.maps.MapsLibrary>,
         importLibrary("marker") as Promise<google.maps.MarkerLibrary>,
+        import("@googlemaps/markerclusterer"),
       ]);
 
       if (cancelled || mapElement.current === null) {
@@ -60,27 +105,105 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
         fullscreenControl: true,
       });
 
-      for (const event of events) {
-        const [longitude, latitude] = event.geometry.coordinates;
-        const marker = new markerLibrary.AdvancedMarkerElement({
-          map,
-          position: { lat: latitude, lng: longitude },
-          title: event.properties.title,
-        });
-        marker.dataset.eventMarker = event.id;
-        marker.append(
-          new markerLibrary.PinElement({
-            background: "#d45d3f",
-            borderColor: "#723524",
-            glyphColor: "#fffaf0",
-            scale: 0.92,
-          }),
+      function renderEvents(nextEvents: EventMapFeature[]): void {
+        clearMarkers();
+        const discoveredCategories = categoriesIn(nextEvents);
+        if (discoveredCategories.length > 0) {
+          setAvailableCategories((currentCategories) => {
+            const nextCategories = new Set([...currentCategories, ...discoveredCategories]);
+            return nextCategories.size === currentCategories.length
+              ? currentCategories
+              : Array.from(nextCategories).sort();
+          });
+        }
+        const eventMarkers: google.maps.marker.AdvancedMarkerElement[] = [];
+        for (const event of nextEvents) {
+          const [longitude, latitude] = event.geometry.coordinates;
+          const isGridCell = isAggregatedGridCell(event);
+          const pinStyle = isGridCell
+            ? AGGREGATED_CELL_PIN_STYLE
+            : pinStyleForCategory(event.properties.primary_category);
+          const marker = new markerLibrary.AdvancedMarkerElement({
+            ...(isGridCell ? { map } : {}),
+            position: { lat: latitude, lng: longitude },
+            title: isGridCell
+              ? `${event.properties.count} events`
+              : event.properties.title,
+          });
+          marker.dataset[isGridCell ? "eventCell" : "eventMarker"] = event.id;
+          marker.append(
+            new markerLibrary.PinElement({
+              ...pinStyle,
+              glyph: isGridCell ? String(event.properties.count) : undefined,
+              scale: isGridCell ? 1.08 : 0.92,
+            }),
+          );
+          if (!isGridCell) {
+            markerListeners.push(marker.addListener("click", () => setSelectedEvent(event)));
+            eventMarkers.push(marker);
+          }
+          markers.push(marker);
+        }
+        if (eventMarkers.length > 0) {
+          markerClusterer = new MarkerClusterer({ map, markers: eventMarkers });
+        }
+        setEventCount(
+          nextEvents.reduce(
+            (count, event) => count + (isAggregatedGridCell(event) ? event.properties.count : 1),
+            0,
+          ),
         );
-        markerListeners.push(marker.addListener("click", () => setSelectedEvent(event)));
-        markers.push(marker);
       }
 
-      setEventCount(events.length);
+      async function refetchViewport(): Promise<void> {
+        const bounds = map.getBounds();
+        if (bounds === undefined) {
+          return;
+        }
+        const northEast = bounds.getNorthEast();
+        const southWest = bounds.getSouthWest();
+        const viewport: EventViewport = {
+          north: northEast.lat(),
+          south: southWest.lat(),
+          east: northEast.lng(),
+          west: southWest.lng(),
+          zoom: Math.floor(map.getZoom() ?? 13),
+        };
+        requestController.abort();
+        requestController = new AbortController();
+        try {
+          const nextEvents = await fetchEvents(
+            apiBaseUrl,
+            requestController.signal,
+            viewport,
+            filtersRef.current,
+          );
+          if (!cancelled) {
+            renderEvents(nextEvents);
+            setError(null);
+          }
+        } catch (reason: unknown) {
+          if (
+            !cancelled &&
+            !(reason instanceof DOMException && reason.name === "AbortError")
+          ) {
+            setError(reason instanceof Error ? reason.message : "Unable to refresh the map");
+          }
+        }
+      }
+
+      refetchViewportRef.current = refetchViewport;
+
+      renderEvents(events);
+      idleListener = map.addListener("idle", () => {
+        if (viewportTimer !== null) {
+          clearTimeout(viewportTimer);
+        }
+        viewportTimer = setTimeout(() => {
+          viewportTimer = null;
+          void refetchViewport();
+        }, VIEWPORT_FETCH_DEBOUNCE_MS);
+      });
     }
 
     void initializeMap().catch((reason: unknown) => {
@@ -91,19 +214,38 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
 
     return () => {
       cancelled = true;
-      controller.abort();
-      for (const listener of markerListeners) {
-        listener.remove();
+      requestController.abort();
+      idleListener?.remove();
+      if (viewportTimer !== null) {
+        clearTimeout(viewportTimer);
       }
-      for (const marker of markers) {
-        marker.map = null;
-      }
+      clearMarkers();
+      refetchViewportRef.current = null;
     };
   }, [apiBaseUrl, apiKey, mapId]);
+
+  useEffect(() => {
+    filtersRef.current = filters;
+    replaceEventFilterUrl(filters);
+    void refetchViewportRef.current?.();
+  }, [filters]);
+
+  useEffect(() => {
+    function restoreFiltersFromUrl(): void {
+      changeFilters(readEventFilters());
+    }
+    window.addEventListener("popstate", restoreFiltersFromUrl);
+    return () => window.removeEventListener("popstate", restoreFiltersFromUrl);
+  }, [changeFilters]);
 
   return (
     <section className="map-stage" aria-label="Philadelphia event map">
       <div ref={mapElement} className="map-canvas" data-testid="event-map" />
+      <EventFilterSidebar
+        availableCategories={availableCategories}
+        filters={filters}
+        onChange={changeFilters}
+      />
       <div className="map-status" role="status">
         {error ?? (eventCount === null ? "Loading Philadelphia events…" : `${eventCount} events`)}
       </div>

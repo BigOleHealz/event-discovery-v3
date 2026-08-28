@@ -13,33 +13,49 @@ test("renders pins, event detail, and an installable offline shell", async ({ pa
       body: mapsFixture,
     });
   });
-  await page.route("**/api/events", async (route) => {
-    const response = await route.fetch();
-    const payload = (await response.json()) as {
-      features: Array<{
-        properties: {
-          registration_links: Array<{ source: string; url: string }>;
-        };
-      }>;
-    };
-    const firstFeature = payload.features[0];
-    if (firstFeature === undefined) {
-      throw new Error("Event fixture response contains no features");
-    }
-    firstFeature.properties.registration_links = [
+  const apiResponse = await page.request.get("/api/events");
+  expect(apiResponse.ok()).toBe(true);
+  const payload = (await apiResponse.json()) as {
+    features: Array<{
+      properties: {
+        primary_category: string | null;
+        registration_links: Array<{ source: string; url: string }>;
+      };
+    }>;
+  };
+  const firstFeature = payload.features[0];
+  if (firstFeature === undefined) {
+    throw new Error("Event fixture response contains no features");
+  }
+  const eventCount = payload.features.length;
+  for (const feature of payload.features) {
+    feature.properties.registration_links = [
       {
         source: "eventbrite",
         url: "https://www.eventbrite.com/e/parkway-jazz-night",
       },
     ];
-    await route.fulfill({ response, json: payload });
+  }
+  await page.route("**/api/events**", async (route) => {
+    const categories = new URL(route.request().url()).searchParams.get("categories")?.split(",");
+    const features =
+      categories === undefined
+        ? payload.features
+        : payload.features.filter((feature) =>
+            categories.includes(feature.properties.primary_category ?? ""),
+          );
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      json: { ...payload, features },
+    });
   });
 
   await page.goto("/");
 
-  await expect(page.getByRole("status")).toHaveText("20 events");
+  await expect(page.getByRole("status")).toHaveText(`${eventCount} events`);
   await expect(page.getByTestId("event-map")).toHaveAttribute("data-google-map-ready", "true");
-  await expect(page.locator("[data-event-marker]")).toHaveCount(20);
+  await expect(page.locator("[data-event-marker]").first()).toBeVisible();
 
   await page.locator("[data-event-marker]").first().click();
   const detail = page.getByRole("dialog");
@@ -50,6 +66,13 @@ test("renders pins, event detail, and an installable offline shell", async ({ pa
   );
   await detail.getByRole("button", { name: "Close details" }).click();
   await expect(detail).toBeHidden();
+
+  const scienceEventCount = payload.features.filter(
+    (feature) => feature.properties.primary_category === "science",
+  ).length;
+  await page.getByRole("listbox", { name: /Categories/ }).selectOption(["science"]);
+  await expect(page).toHaveURL(/categories=science/);
+  await expect(page.getByRole("status")).toHaveText(`${scienceEventCount} events`);
 
   const manifestHref = await page.locator('link[rel="manifest"]').getAttribute("href");
   expect(manifestHref).not.toBeNull();
@@ -95,7 +118,7 @@ test("renders pins, event detail, and an installable offline shell", async ({ pa
   });
 
   await page.reload();
-  await expect(page.getByRole("status")).toHaveText("20 events");
+  await expect(page.getByRole("status")).toHaveText(`${scienceEventCount} events`);
   await expect
     .poll(() => page.evaluate(() => navigator.serviceWorker.controller !== null))
     .toBe(true);

@@ -63,7 +63,6 @@ user-generated events, production-grade scaling.
 | `postgres` | Canonical event/user/invite data (PostGIS enabled) |
 | `neo4j` | Event ↔ category ↔ venue ↔ source relationships |
 | `qdrant` | Embeddings for cross-source dedup |
-| `redis` | Airflow broker + API response cache |
 | `stagehand` | Browser automation worker for JS-rendered sites |
 
 ---
@@ -277,7 +276,7 @@ CREATE TABLE ingest.run (
     run_date        DATE NOT NULL,
     source          TEXT NOT NULL,
     source_url      TEXT,
-    city_searched   TEXT NOT NULL,
+    city_searched   TEXT NOT NULL,      -- superseded by market_id; dropped in 4a
     market_id       UUID REFERENCES ingest.market(id),
     search_bounds   GEOGRAPHY(POLYGON, 4326),
     categories      TEXT[],             -- categories crawled in this run
@@ -329,6 +328,35 @@ CREATE TABLE ingest.rejected_listing (
     raw_payload     JSONB,
     rejected_at     TIMESTAMPTZ DEFAULT now()
 );
+
+-- Address string -> already-resolved venue. Keyed on the normalized address, not on the
+-- venue, because the cache has to answer "have I paid Google for this string before?" and
+-- many distinct scraped spellings resolve to one venue row. venue stays the deduplicated
+-- result keyed on google_place_id; this is the lookup that stops a second call from being
+-- needed to discover that. The FK crosses into the canonical schema deliberately: the cache
+-- is operational, the venue it points at is product data.
+CREATE TABLE ingest.geocode_cache (
+    normalized_address TEXT PRIMARY KEY,
+    input_address      TEXT NOT NULL,
+    venue_id           UUID NOT NULL REFERENCES venue(id),
+    google_place_id    TEXT NOT NULL,
+    created_at         TIMESTAMPTZ NOT NULL,
+    last_used_at       TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX ON ingest.geocode_cache (google_place_id);
+
+-- Stage-2 detail payloads with a TTL (§5), so a re-run inside the window costs no quota.
+CREATE TABLE ingest.event_detail_cache (
+    source          TEXT NOT NULL,
+    source_event_id TEXT NOT NULL,
+    raw_payload     JSONB NOT NULL,
+    fetched_at      TIMESTAMPTZ NOT NULL,
+    expires_at      TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (source, source_event_id)
+);
+
+CREATE INDEX ON ingest.event_detail_cache (expires_at);
 ```
 
 `ingest.market` is the app's source-independent place identity. `source_location` belongs
@@ -666,7 +694,9 @@ post-event feedback, and eventually recommendations — and they cost almost not
 Scraped addresses are strings, not coordinates. Google Geocoding/Places API resolves them
 to lat/lon plus a `google_place_id`, which doubles as the venue dedup key. Cache
 aggressively in the `venue` table — the same venues recur constantly and the API bills
-per call.
+per call. The address strings themselves are cached alongside it in `ingest.geocode_cache`
+(§3.2), since many spellings resolve to the same venue and the string is what a new listing
+arrives with.
 
 ---
 
@@ -869,9 +899,10 @@ containers, not mocks — wherever the dependency is cheap to run.
 ### CI
 
 GitHub Actions on every push: lint (`ruff`, `eslint`), type check (`mypy`, `tsc`), then the
-suite. Postgres and Qdrant as service containers. E2E runs on PRs only, since it's the slow
-one. Coverage reported but not gated on a number — a threshold just invites tests written to
-satisfy it.
+suite. Dependencies come from `testcontainers` inside the test run rather than workflow
+service containers, so the same suite runs identically on a laptop and in CI — Postgres
+today, Qdrant when dedup lands. E2E runs on PRs only, since it's the slow one. Coverage
+reported but not gated on a number — a threshold just invites tests written to satisfy it.
 
 ---
 
@@ -888,7 +919,6 @@ services:
   postgres:   { image: postgis/postgis:16-3.4, volumes: [pgdata:/var/lib/postgresql/data] }
   neo4j:      { image: neo4j:5,    volumes: [neo4jdata:/data] }
   qdrant:     { image: qdrant/qdrant, volumes: [qdrantdata:/qdrant/storage] }
-  redis:      { image: redis:7 }
 
 volumes: { pgdata: {}, neo4jdata: {}, qdrantdata: {} }
 ```
@@ -904,7 +934,8 @@ So this lifts to the cloud without a rewrite:
 2. **No hardcoded service hostnames** — `POSTGRES_HOST`, `NEO4J_URI`, `QDRANT_URL` etc.,
    defaulted to Compose service names but always overridable
 3. **Named volumes for all stateful services** — never state inside a container layer
-4. **Stateless API containers** — sessions in Redis or signed cookies, not in memory
+4. **Stateless API containers** — sessions in signed cookies, not in memory and not in a
+   session store (§13)
 5. **Secrets from env, never committed** — `.env.example` checked in, `.env` gitignored
 6. **One process per container**
 7. **Health checks on every service** so orchestrators can manage them
@@ -979,7 +1010,8 @@ installs to a phone home screen.
 
 ### Phase 4 — Multi-source and deduplication
 
-- **4a** — `ingest_meetup` DAG; two sources now producing overlapping events
+- **4a** — `ingest_meetup` DAG; two sources now producing overlapping events. The same
+  migration drops `ingest.run.city_searched`, superseded by `market_id` in 2f
 - **4b** — Qdrant container; `event_listings` collection with geo + `starts_at_epoch`
   payload indexes
 - **4c** — Exact-match shortcut: `google_place_id` + start-minute + normalized title
@@ -1002,7 +1034,11 @@ and the ambiguous band is reviewable in a browser.
 
 ### Phase 6 — Auth and social
 
-- **6a** — Google OAuth, `app_user`, session cookies, stateless API containers
+- **6a** — Google OAuth, `app_user`, session cookies, stateless API containers. Session
+  read/write goes behind a single interface — issue, validate, revoke — with a
+  signed-cookie implementation; handlers must not read the cookie directly. This is a seam,
+  not a planned migration: if server-side sessions are ever needed, a Postgres session
+  table implements the same interface. Redis is not the fallback (§13)
 - **6b** — Invites: `INVITED_TO` edge with `invited_by` list, accept/decline flow,
   `ATTENDING` on acceptance
 - **6c** — Post-event feedback: `request_event_feedback` DAG, `ATTENDING` → `ATTENDED`
@@ -1098,18 +1134,26 @@ Settled, recorded so they don't get relitigated:
 - **Colour encodes category, badges encode everything else.** Pin colour is reserved for
   category; the friends-attending layer is a badge on top. Prevents two encodings fighting
   over the same visual channel. (§7)
+- **Signed cookies, not Redis.** Session payload is small, and the cost is losing
+  server-side revocation — accepted, mitigated by short expiry plus refresh. Redis is not
+  added until something needs a hot cache or rate limiting; a Postgres session table would
+  come first. If revocation is later required, the replacement is a Postgres session table,
+  not Redis. Redis is reconsidered only for rate limiting or a hot cache, neither of which
+  is on the roadmap. (§2, §9, §11 6a)
+- **Airflow runs LocalExecutor.** No Celery broker, so no queueing service in Compose. (§9)
+- **Event timezone is resolved per event at ingest**, not derived from the venue. The source
+  listing's timezone is carried into `canonical_event.timezone`, which is NOT NULL; `venue`
+  has no timezone column. Settled by implementation in Phase 2 rather than in advance. (§3.1)
 
 ## 14. Open Questions
 
 1. Recurring events — one canonical event with a recurrence rule, or one per occurrence?
    (Affects the dedup time-window logic significantly.)
-2. Timezone handling for events near timezone boundaries — store venue timezone on `venue`
-   and derive, or resolve per event at ingest?
-3. Rate limits and ToS review for each scraped source before adding it.
-4. Shadow account merge edge case: same person with both a shadow account (phone) and a real
+2. Rate limits and ToS review for each scraped source before adding it.
+3. Shadow account merge edge case: same person with both a shadow account (phone) and a real
    account (email), no overlapping identifier. Detectable at all, or accept the duplicate?
-5. Push relevance floor needs RSVP history to work, but new users have none — is a cold-start
+4. Push relevance floor needs RSVP history to work, but new users have none — is a cold-start
    signal worth it (declared category interests at signup), or do new users simply get no
    push until they RSVP once?
-6. Does the friends-are-going layer need privacy controls in v1, or is "friends only" scoping
+5. Does the friends-are-going layer need privacy controls in v1, or is "friends only" scoping
    sufficient?

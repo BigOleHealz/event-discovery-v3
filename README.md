@@ -2,7 +2,7 @@
 
 A map-first progressive web app for discovering in-person events collected from multiple
 sources. The product will combine a React map interface, a FastAPI service, Postgres with
-PostGIS, Airflow ingestion, Neo4j relationships, Qdrant deduplication, Redis, and a
+PostGIS, Airflow ingestion, Neo4j relationships, Qdrant deduplication, and a
 Stagehand browser-automation worker.
 
 `PROJECT_PLAN.md` is the product and technical specification. `CONTRIBUTING.md` records
