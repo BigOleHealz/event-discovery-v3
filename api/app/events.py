@@ -49,12 +49,32 @@ class EventFeature(BaseModel):
     properties: EventProperties
 
 
+class GridCellProperties(BaseModel):
+    count: int
+    top_categories: list[str]
+
+
+class GridCellFeature(BaseModel):
+    type: Literal["Feature"] = "Feature"
+    id: str
+    geometry: PointGeometry
+    properties: GridCellProperties
+
+
 class EventFeatureCollection(BaseModel):
     type: Literal["FeatureCollection"] = "FeatureCollection"
-    features: list[EventFeature]
+    features: list[EventFeature | GridCellFeature]
 
 
 REGISTRATION_LINKS_ADAPTER = TypeAdapter(list[RegistrationLink])
+TOP_CATEGORIES_ADAPTER = TypeAdapter(list[str])
+INDIVIDUAL_ZOOM_THRESHOLD = 13
+MAX_INDIVIDUAL_EVENTS = 500
+
+
+def grid_cell_size(zoom: int) -> float:
+    """Return a roughly 64-pixel-wide grid cell in longitude degrees."""
+    return 360.0 / (2.0 ** (zoom + 2))
 
 
 @dataclass(frozen=True)
@@ -88,6 +108,30 @@ def get_bounding_box(
             detail="north must be greater than south",
         )
     return BoundingBox(north=north, south=south, east=east, west=west)
+
+
+BOUNDS_CLAUSE = """
+      AND (
+          (
+              :west <= :east
+              AND event.location && ST_MakeEnvelope(
+                  :west, :south, :east, :north, 4326
+              )::geography
+          )
+          OR
+          (
+              :west > :east
+              AND (
+                  event.location && ST_MakeEnvelope(
+                      :west, :south, 180, :north, 4326
+                  )::geography
+                  OR event.location && ST_MakeEnvelope(
+                      -180, :south, :east, :north, 4326
+                  )::geography
+              )
+          )
+      )
+"""
 
 
 EVENT_SELECT = """
@@ -125,36 +169,74 @@ EVENT_SELECT = """
       AND event.starts_at >= :current_time
       {bounds_clause}
     ORDER BY event.starts_at, event.id
+    LIMIT {event_limit}
 """
 
-EVENT_QUERY = text(EVENT_SELECT.format(bounds_clause=""))
+EVENT_QUERY = text(EVENT_SELECT.format(bounds_clause="", event_limit=MAX_INDIVIDUAL_EVENTS))
 
 BOUNDED_EVENT_QUERY = text(
     EVENT_SELECT.format(
-        bounds_clause="""
-      AND (
-          (
-              :west <= :east
-              AND event.location && ST_MakeEnvelope(
-                  :west, :south, :east, :north, 4326
-              )::geography
-          )
-          OR
-          (
-              :west > :east
-              AND (
-                  event.location && ST_MakeEnvelope(
-                      :west, :south, 180, :north, 4326
-                  )::geography
-                  OR event.location && ST_MakeEnvelope(
-                      -180, :south, :east, :north, 4326
-                  )::geography
-              )
-          )
-      )
-        """
+        bounds_clause=BOUNDS_CLAUSE,
+        event_limit=MAX_INDIVIDUAL_EVENTS,
     )
 )
+
+AGGREGATED_EVENT_SELECT = """
+    WITH filtered_events AS (
+        SELECT
+            event.location::geometry AS location,
+            event.primary_category
+        FROM canonical_event AS event
+        WHERE event.archived_at IS NULL
+          AND event.starts_at >= :current_time
+          {bounds_clause}
+    ),
+    grid_counts AS (
+        SELECT
+            ST_SnapToGrid(location, :cell_size, :cell_size) AS cell,
+            COUNT(*)::integer AS event_count
+        FROM filtered_events
+        GROUP BY cell
+    ),
+    category_counts AS (
+        SELECT
+            ST_SnapToGrid(location, :cell_size, :cell_size) AS cell,
+            primary_category,
+            COUNT(*)::integer AS category_count
+        FROM filtered_events
+        WHERE primary_category IS NOT NULL
+        GROUP BY cell, primary_category
+    ),
+    ranked_categories AS (
+        SELECT
+            cell,
+            primary_category,
+            category_count,
+            ROW_NUMBER() OVER (
+                PARTITION BY cell
+                ORDER BY category_count DESC, primary_category
+            ) AS category_rank
+        FROM category_counts
+    )
+    SELECT
+        ST_X(grid_counts.cell) AS longitude,
+        ST_Y(grid_counts.cell) AS latitude,
+        grid_counts.event_count,
+        COALESCE(
+            jsonb_agg(
+                ranked_categories.primary_category
+                ORDER BY ranked_categories.category_rank
+            ) FILTER (WHERE ranked_categories.category_rank <= 3),
+            '[]'::jsonb
+        ) AS top_categories
+    FROM grid_counts
+    LEFT JOIN ranked_categories ON ranked_categories.cell = grid_counts.cell
+    GROUP BY grid_counts.cell, grid_counts.event_count
+    ORDER BY latitude, longitude
+"""
+
+AGGREGATED_EVENT_QUERY = text(AGGREGATED_EVENT_SELECT.format(bounds_clause=""))
+AGGREGATED_BOUNDED_EVENT_QUERY = text(AGGREGATED_EVENT_SELECT.format(bounds_clause=BOUNDS_CLAUSE))
 
 
 @router.get("", response_model=EventFeatureCollection)
@@ -162,8 +244,37 @@ def list_events(
     connection: Annotated[Connection, Depends(get_connection)],
     current_time: Annotated[datetime, Depends(utc_now)],
     bounds: Annotated[BoundingBox | None, Depends(get_bounding_box)],
+    zoom: Annotated[int, Query(ge=0, le=22)] = INDIVIDUAL_ZOOM_THRESHOLD,
 ) -> EventFeatureCollection:
     parameters: dict[str, datetime | float] = {"current_time": current_time}
+
+    if zoom < INDIVIDUAL_ZOOM_THRESHOLD:
+        query = AGGREGATED_EVENT_QUERY
+        parameters["cell_size"] = grid_cell_size(zoom)
+        if bounds is not None:
+            query = AGGREGATED_BOUNDED_EVENT_QUERY
+            parameters.update(
+                north=bounds.north,
+                south=bounds.south,
+                east=bounds.east,
+                west=bounds.west,
+            )
+        rows = connection.execute(query, parameters).mappings()
+        grid_features: list[EventFeature | GridCellFeature] = [
+            GridCellFeature(
+                id=(f"cell:{zoom}:{float(row['longitude']):.8f}:{float(row['latitude']):.8f}"),
+                geometry=PointGeometry(
+                    coordinates=(float(row["longitude"]), float(row["latitude"]))
+                ),
+                properties=GridCellProperties(
+                    count=int(row["event_count"]),
+                    top_categories=TOP_CATEGORIES_ADAPTER.validate_python(row["top_categories"]),
+                ),
+            )
+            for row in rows
+        ]
+        return EventFeatureCollection(features=grid_features)
+
     query = EVENT_QUERY
     if bounds is not None:
         query = BOUNDED_EVENT_QUERY
@@ -174,7 +285,7 @@ def list_events(
             west=bounds.west,
         )
     rows = connection.execute(query, parameters).mappings()
-    features = [
+    event_features: list[EventFeature | GridCellFeature] = [
         EventFeature(
             id=str(row["id"]),
             geometry=PointGeometry(coordinates=(float(row["longitude"]), float(row["latitude"]))),
@@ -198,4 +309,4 @@ def list_events(
         )
         for row in rows
     ]
-    return EventFeatureCollection(features=features)
+    return EventFeatureCollection(features=event_features)

@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { EventFeatureCollection } from "./events";
+import type { EventFeatureCollection, EventMapFeatureCollection } from "./events";
 import { EventMap } from "./EventMap";
 
 const mapConstructor = vi.fn();
@@ -10,6 +10,7 @@ const pinConstructor = vi.fn();
 const markerInstances: FakeMarker[] = [];
 const mapInstances: FakeMap[] = [];
 let viewport = { north: 40.1, south: 39.8, east: -74.9, west: -75.3 };
+let zoom = 12;
 
 class FakeMap {
   private readonly listeners = new Map<string, () => void>();
@@ -33,6 +34,10 @@ class FakeMap {
       getSouthWest: () =>
         ({ lat: () => viewport.south, lng: () => viewport.west }) as google.maps.LatLng,
     } as google.maps.LatLngBounds;
+  }
+
+  getZoom(): number {
+    return zoom;
   }
 
   trigger(eventName: string): void {
@@ -121,6 +126,18 @@ const events: EventFeatureCollection = {
   ],
 };
 
+const aggregatedCells: EventMapFeatureCollection = {
+  type: "FeatureCollection",
+  features: [
+    {
+      type: "Feature",
+      id: "cell:12:-75.16845703:39.94628906",
+      geometry: { type: "Point", coordinates: [-75.16845703, 39.94628906] },
+      properties: { count: 2, top_categories: ["music", "science"] },
+    },
+  ],
+};
+
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
@@ -129,17 +146,24 @@ afterEach(() => {
   markerInstances.length = 0;
   mapInstances.length = 0;
   viewport = { north: 40.1, south: 39.8, east: -74.9, west: -75.3 };
+  zoom = 12;
 });
 
-function stubEventResponse(): void {
+function stubEventResponse(
+  responses: EventMapFeatureCollection[] = [events],
+): void {
+  let requestNumber = 0;
   vi.stubGlobal(
     "fetch",
     vi.fn().mockImplementation(() =>
       Promise.resolve(
-        new Response(JSON.stringify(events), {
+        new Response(
+          JSON.stringify(responses[Math.min(requestNumber++, responses.length - 1)]),
+          {
           status: 200,
           headers: { "Content-Type": "application/json" },
-        }),
+          },
+        ),
       ),
     ),
   );
@@ -187,7 +211,7 @@ describe("EventMap", () => {
   });
 
   it("debounces map idle events into one bounded viewport refetch", async () => {
-    stubEventResponse();
+    stubEventResponse([events, aggregatedCells]);
     render(<EventMap apiBaseUrl="." apiKey="test-key" mapId="map-id" />);
 
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("2 events"));
@@ -213,9 +237,19 @@ describe("EventMap", () => {
       south: "39.8",
       east: "-74.9",
       west: "-75.3",
+      zoom: "12",
     });
     vi.useRealTimers();
-    await waitFor(() => expect(markerConstructor).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(markerConstructor).toHaveBeenCalledTimes(3));
     expect(markerInstances.slice(0, 2).every((marker) => marker.map === null)).toBe(true);
+    expect(markerConstructor).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        position: { lat: 39.94628906, lng: -75.16845703 },
+        title: "2 events",
+      }),
+    );
+    expect(pinConstructor).toHaveBeenLastCalledWith(
+      expect.objectContaining({ glyph: "2", background: "#59636e" }),
+    );
   });
 });

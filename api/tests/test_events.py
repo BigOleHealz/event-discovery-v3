@@ -15,7 +15,7 @@ from sqlalchemy import Connection
 
 from app.clock import utc_now
 from app.database import get_connection
-from app.events import BOUNDED_EVENT_QUERY
+from app.events import AGGREGATED_BOUNDED_EVENT_QUERY, BOUNDED_EVENT_QUERY, grid_cell_size
 from app.main import app
 from app.seed import EVENTS, seed_database
 
@@ -34,7 +34,10 @@ def migrated_engine(database_url: str) -> Iterator[sa.Engine]:
         command.downgrade(config, "base")
 
 
-async def request_events(application: FastAPI, params: dict[str, float] | None = None) -> Response:
+async def request_events(
+    application: FastAPI,
+    params: dict[str, float | int] | None = None,
+) -> Response:
     transport = ASGITransport(app=application)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         return await client.get("/api/events", params=params)
@@ -114,7 +117,7 @@ def test_events_are_valid_geojson_with_longitude_first(migrated_engine: sa.Engin
     app.dependency_overrides[get_connection] = override_connection
     app.dependency_overrides[utc_now] = lambda: datetime.fromisoformat("2026-08-27T12:00:00+00:00")
     try:
-        response = anyio.run(request_events, app)
+        response = anyio.run(request_events, app, {"zoom": 13})
     finally:
         app.dependency_overrides.clear()
 
@@ -248,6 +251,52 @@ def test_bounding_box_requires_all_coordinates(migrated_engine: sa.Engine) -> No
     assert response.json()["detail"] == "north, south, east, and west must be supplied together"
 
 
+def test_grid_aggregation_counts_sum_to_the_underlying_events(
+    migrated_engine: sa.Engine,
+) -> None:
+    bounds = {"north": 40.10, "south": 39.80, "east": -74.90, "west": -75.30}
+    current_time = datetime.fromisoformat("2026-08-27T12:00:00+00:00")
+    with migrated_engine.begin() as connection:
+        for fixture_number in range(3):
+            insert_spatial_event(
+                connection,
+                title=f"Grid fixture {fixture_number}",
+                longitude=-75.1652,
+                latitude=39.9526,
+            )
+        underlying_event_count = connection.execute(
+            sa.text(
+                """
+                SELECT COUNT(*)
+                FROM canonical_event AS event
+                WHERE event.archived_at IS NULL
+                  AND event.starts_at >= :current_time
+                  AND event.location && ST_MakeEnvelope(
+                      :west, :south, :east, :north, 4326
+                  )::geography
+                """
+            ),
+            {"current_time": current_time, **bounds},
+        ).scalar_one()
+
+    def override_connection() -> Iterator[Connection]:
+        with migrated_engine.connect() as connection:
+            yield connection
+
+    app.dependency_overrides[get_connection] = override_connection
+    app.dependency_overrides[utc_now] = lambda: current_time
+    try:
+        response = anyio.run(request_events, app, {**bounds, "zoom": 12})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    cells = response.json()["features"]
+    assert sum(cell["properties"]["count"] for cell in cells) == underlying_event_count
+    assert any(cell["properties"]["count"] >= 3 for cell in cells)
+    assert all(len(cell["properties"]["top_categories"]) <= 3 for cell in cells)
+
+
 def test_bounding_query_plan_uses_the_postgis_gist_index(
     migrated_engine: sa.Engine,
 ) -> None:
@@ -284,6 +333,49 @@ def test_bounding_query_plan_uses_the_postgis_gist_index(
                 "south": 39.80,
                 "east": -74.90,
                 "west": -75.25,
+            },
+        ).scalar_one()
+
+    assert "ix_canonical_event_location" in nested_index_names(plan)
+
+
+def test_grid_aggregation_query_plan_uses_the_postgis_gist_index(
+    migrated_engine: sa.Engine,
+) -> None:
+    with migrated_engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO canonical_event (
+                    id, title, starts_at, timezone, location, primary_category
+                )
+                SELECT
+                    gen_random_uuid(),
+                    'Grid plan fixture ' || fixture_number,
+                    '2030-01-01T12:00:00Z',
+                    'UTC',
+                    ST_SetSRID(
+                        ST_MakePoint(
+                            -120 + (fixture_number % 1000) * 0.001,
+                            35 + (fixture_number % 500) * 0.001
+                        ),
+                        4326
+                    )::geography,
+                    'fixture'
+                FROM generate_series(1, 5000) AS fixture_number
+                """
+            )
+        )
+        connection.execute(sa.text("ANALYZE canonical_event"))
+        plan = connection.execute(
+            sa.text(f"EXPLAIN (FORMAT JSON) {AGGREGATED_BOUNDED_EVENT_QUERY.text}"),
+            {
+                "current_time": datetime.fromisoformat("2026-08-27T12:00:00+00:00"),
+                "north": 40.10,
+                "south": 39.80,
+                "east": -74.90,
+                "west": -75.25,
+                "cell_size": grid_cell_size(12),
             },
         ).scalar_one()
 

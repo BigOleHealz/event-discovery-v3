@@ -38,11 +38,31 @@ export interface EventFeatureCollection {
   features: EventFeature[];
 }
 
+export interface GridCellProperties {
+  count: number;
+  top_categories: string[];
+}
+
+export interface GridCellFeature {
+  type: "Feature";
+  id: string;
+  geometry: PointGeometry;
+  properties: GridCellProperties;
+}
+
+export type EventMapFeature = EventFeature | GridCellFeature;
+
+export interface EventMapFeatureCollection {
+  type: "FeatureCollection";
+  features: EventMapFeature[];
+}
+
 export interface EventViewport {
   north: number;
   south: number;
   east: number;
   west: number;
+  zoom: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -114,12 +134,34 @@ function isEventFeature(value: unknown): value is EventFeature {
   );
 }
 
-function isEventFeatureCollection(value: unknown): value is EventFeatureCollection {
+function isGridCellFeature(value: unknown): value is GridCellFeature {
+  if (
+    !isRecord(value) ||
+    value.type !== "Feature" ||
+    typeof value.id !== "string" ||
+    !isPointGeometry(value.geometry) ||
+    !isRecord(value.properties)
+  ) {
+    return false;
+  }
+  return (
+    Number.isInteger(value.properties.count) &&
+    (value.properties.count as number) > 0 &&
+    Array.isArray(value.properties.top_categories) &&
+    value.properties.top_categories.every((category) => typeof category === "string")
+  );
+}
+
+export function isAggregatedGridCell(feature: EventMapFeature): feature is GridCellFeature {
+  return "count" in feature.properties;
+}
+
+function isEventMapFeatureCollection(value: unknown): value is EventMapFeatureCollection {
   return (
     isRecord(value) &&
     value.type === "FeatureCollection" &&
     Array.isArray(value.features) &&
-    value.features.every(isEventFeature)
+    value.features.every((feature) => isEventFeature(feature) || isGridCellFeature(feature))
   );
 }
 
@@ -127,7 +169,7 @@ export async function fetchEvents(
   apiBaseUrl: string,
   signal: AbortSignal,
   viewport?: EventViewport,
-): Promise<EventFeature[]> {
+): Promise<EventMapFeature[]> {
   const endpoint = `${apiBaseUrl.replace(/\/$/, "")}/api/events`;
   const url = new URL(endpoint, window.location.href);
   if (viewport !== undefined) {
@@ -135,6 +177,7 @@ export async function fetchEvents(
     url.searchParams.set("south", String(viewport.south));
     url.searchParams.set("east", String(viewport.east));
     url.searchParams.set("west", String(viewport.west));
+    url.searchParams.set("zoom", String(viewport.zoom));
   }
   const response = await fetch(url, { signal });
   if (!response.ok) {
@@ -142,7 +185,7 @@ export async function fetchEvents(
   }
 
   const payload: unknown = await response.json();
-  if (!isEventFeatureCollection(payload)) {
+  if (!isEventMapFeatureCollection(payload)) {
     throw new Error("Event response is not a GeoJSON FeatureCollection");
   }
   return payload.features;

@@ -2,8 +2,8 @@ import { importLibrary, setOptions } from "@googlemaps/js-api-loader";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { EventDetailPanel } from "./EventDetailPanel";
-import type { EventFeature, EventViewport } from "./events";
-import { fetchEvents } from "./events";
+import type { EventFeature, EventMapFeature, EventViewport } from "./events";
+import { fetchEvents, isAggregatedGridCell } from "./events";
 
 const PHILADELPHIA_CENTER: google.maps.LatLngLiteral = { lat: 39.9526, lng: -75.1652 };
 const VIEWPORT_FETCH_DEBOUNCE_MS = 300;
@@ -74,28 +74,39 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
         fullscreenControl: true,
       });
 
-      function renderEvents(nextEvents: EventFeature[]): void {
+      function renderEvents(nextEvents: EventMapFeature[]): void {
         clearMarkers();
         for (const event of nextEvents) {
           const [longitude, latitude] = event.geometry.coordinates;
+          const isGridCell = isAggregatedGridCell(event);
           const marker = new markerLibrary.AdvancedMarkerElement({
             map,
             position: { lat: latitude, lng: longitude },
-            title: event.properties.title,
+            title: isGridCell
+              ? `${event.properties.count} events`
+              : event.properties.title,
           });
-          marker.dataset.eventMarker = event.id;
+          marker.dataset[isGridCell ? "eventCell" : "eventMarker"] = event.id;
           marker.append(
             new markerLibrary.PinElement({
-              background: "#d45d3f",
-              borderColor: "#723524",
+              background: isGridCell ? "#59636e" : "#d45d3f",
+              borderColor: isGridCell ? "#303841" : "#723524",
               glyphColor: "#fffaf0",
-              scale: 0.92,
+              glyph: isGridCell ? String(event.properties.count) : undefined,
+              scale: isGridCell ? 1.08 : 0.92,
             }),
           );
-          markerListeners.push(marker.addListener("click", () => setSelectedEvent(event)));
+          if (!isGridCell) {
+            markerListeners.push(marker.addListener("click", () => setSelectedEvent(event)));
+          }
           markers.push(marker);
         }
-        setEventCount(nextEvents.length);
+        setEventCount(
+          nextEvents.reduce(
+            (count, event) => count + (isAggregatedGridCell(event) ? event.properties.count : 1),
+            0,
+          ),
+        );
       }
 
       async function refetchViewport(): Promise<void> {
@@ -110,6 +121,7 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
           south: southWest.lat(),
           east: northEast.lng(),
           west: southWest.lng(),
+          zoom: Math.floor(map.getZoom() ?? 13),
         };
         requestController.abort();
         requestController = new AbortController();
