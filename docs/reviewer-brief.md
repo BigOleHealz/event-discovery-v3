@@ -120,9 +120,9 @@ should be settled before the sub-phase that depends on them:
 ## How this project is run
 
 The maintainer drives Codex one roadmap sub-phase at a time, in a fresh session per
-sub-phase or per closely-related pair. Codex does not commit without explicit
-authorization — `CONTRIBUTING.md` tells it to show the diff and stop. Phase prompts live in
-`docs/codex-prompts.md`.
+sub-phase or per closely-related pair, pasting a short prompt that names the sub-phase and
+the plan sections to read. Codex does not commit without explicit authorization —
+`CONTRIBUTING.md` tells it to show the diff and stop.
 
 Context budget is a live concern; `AGENTS.md` has a hygiene section, and `rtk` compresses
 command output before it reaches the coding agent. If you are proposing additions to any
