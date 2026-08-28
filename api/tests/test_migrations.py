@@ -101,6 +101,7 @@ def test_migrations_seed_and_constraints(database_url: str) -> None:
             "detail_cached",
             "market_id",
         } <= run_columns
+        assert "city_searched" not in run_columns
         page_columns = {
             str(row.column_name)
             for row in connection.execute(
@@ -122,7 +123,7 @@ def test_migrations_seed_and_constraints(database_url: str) -> None:
                        target.category, target.window_days, target.page_cap, target.enabled
                 FROM ingest.crawl_target AS target
                 JOIN ingest.market AS market ON market.id = target.market_id
-                ORDER BY category
+                ORDER BY target.source, target.category
                 """
             )
         ).all()
@@ -141,6 +142,34 @@ def test_migrations_seed_and_constraints(database_url: str) -> None:
                 "philadelphia-pa",
                 {"kind": "eventbrite_slug", "slug": "pa--philadelphia"},
                 "science-and-tech",
+                5,
+                20,
+                True,
+            ),
+            (
+                "meetup",
+                "philadelphia-pa",
+                {
+                    "kind": "meetup_geo_radius",
+                    "lat": 39.9526,
+                    "lon": -75.1652,
+                    "radius_miles": 25,
+                },
+                "546",
+                5,
+                20,
+                True,
+            ),
+            (
+                "meetup",
+                "philadelphia-pa",
+                {
+                    "kind": "meetup_geo_radius",
+                    "lat": 39.9526,
+                    "lon": -75.1652,
+                    "radius_miles": 25,
+                },
+                "652",
                 5,
                 20,
                 True,
@@ -248,9 +277,10 @@ def test_migrations_seed_and_constraints(database_url: str) -> None:
             text(
                 """
                 INSERT INTO ingest.run (
-                    id, run_date, source, city_searched, started_at, status
+                    id, run_date, source, market_id, started_at, status
                 ) VALUES (
-                    :id, CURRENT_DATE, 'eventbrite', 'pa--philadelphia', now(), 'running'
+                    :id, CURRENT_DATE, 'eventbrite',
+                    '8a7a04d3-7fb6-4cdb-a3d7-e5f08cf48bed', now(), 'running'
                 )
                 """
             ),

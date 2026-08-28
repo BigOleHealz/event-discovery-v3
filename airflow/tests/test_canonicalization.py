@@ -83,9 +83,9 @@ def stage_run(
     run_id = repository.open_run(
         dag_id="ingest_eventbrite",
         airflow_run_id="scheduled__2026-08-27T03:15:00+00:00",
+        source="eventbrite",
         source_url="https://eventbrite.test/v3/organizations/recorded/events/",
         market_id=uuid.UUID("8a7a04d3-7fb6-4cdb-a3d7-e5f08cf48bed"),
-        city="Philadelphia",
         started_at=observed_at,
     )
     found = fetch_and_stage(

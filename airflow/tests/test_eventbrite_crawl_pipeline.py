@@ -71,9 +71,9 @@ def open_run(repository: IngestionRepository, airflow_run_id: str) -> uuid.UUID:
     return repository.open_run(
         dag_id="ingest_eventbrite",
         airflow_run_id=airflow_run_id,
+        source="eventbrite",
         source_url="https://www.eventbrite.com/d/pa--philadelphia/",
         market_id=uuid.UUID("8a7a04d3-7fb6-4cdb-a3d7-e5f08cf48bed"),
-        city="pa--philadelphia",
         categories=("science-and-tech", "food-and-drink"),
         window_start=date(2026, 8, 27),
         window_end=date(2026, 8, 31),

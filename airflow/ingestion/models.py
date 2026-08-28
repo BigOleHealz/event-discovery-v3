@@ -1,4 +1,4 @@
-"""Typed values passed between Eventbrite ingestion steps."""
+"""Typed values passed between source ingestion steps."""
 
 import uuid
 from collections.abc import Mapping
@@ -7,8 +7,8 @@ from datetime import date, datetime
 
 
 @dataclass(frozen=True)
-class ParsedEventbriteListing:
-    """The Eventbrite fields needed by later geocode and upsert phases."""
+class ParsedListing:
+    """Source-neutral fields needed by later geocode and upsert phases."""
 
     source_event_id: str
     url: str
@@ -48,6 +48,7 @@ class CrawlTarget:
     market_id: uuid.UUID
     market_slug: str
     market_name: str
+    market_timezone: str
     source_location: Mapping[str, object]
     category: str
     window_days: int
@@ -62,6 +63,7 @@ class CrawlMarketTargets:
     market_id: uuid.UUID
     market_slug: str
     market_name: str
+    market_timezone: str
     targets: tuple[CrawlTarget, ...]
 
     @property
@@ -139,7 +141,7 @@ class EventbriteDetailSummary:
 class FilteredParseSummary:
     """Counts and survivors produced by the layered parse filter."""
 
-    accepted: tuple[ParsedEventbriteListing, ...]
+    accepted: tuple[ParsedListing, ...]
     rejected_online: int
     rejected_no_location: int
 
@@ -150,3 +152,56 @@ class FilteredParseSummary:
     @property
     def processed_total(self) -> int:
         return len(self.accepted) + self.rejected_total
+
+
+# Kept as an import-compatible alias while Eventbrite-specific tests and code migrate to
+# the source-neutral model.
+ParsedEventbriteListing = ParsedListing
+
+
+@dataclass(frozen=True)
+class MeetupSearchTarget:
+    """One official Meetup event-search query within a canonical market crawl."""
+
+    crawl_target_id: uuid.UUID
+    latitude: float
+    longitude: float
+    radius_miles: float
+    topic_category_id: str
+    window_start: datetime
+    window_end: datetime
+    page_cap: int
+
+    @property
+    def label(self) -> str:
+        return (
+            f"{self.topic_category_id}:"
+            f"{self.window_start.date().isoformat()}..{self.window_end.date().isoformat()}"
+        )
+
+
+@dataclass(frozen=True)
+class MeetupListingPage:
+    """One cursor-paginated Meetup GraphQL event-search response."""
+
+    crawl_target_id: uuid.UUID
+    url: str
+    search_target: str
+    page_number: int
+    http_status: int
+    duration_ms: int
+    byte_count: int
+    events: tuple[dict[str, object], ...]
+
+
+@dataclass(frozen=True)
+class MeetupCrawlSummary:
+    """Meetup search funnel after cross-target exact-id unioning."""
+
+    pages_fetched: int
+    listing_appearances: int
+    events: tuple[dict[str, object], ...]
+
+    @property
+    def unique_ids(self) -> int:
+        return len(self.events)

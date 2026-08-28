@@ -11,9 +11,9 @@ from typing import Literal, cast
 import psycopg
 
 from ingestion.clock import Clock
-from ingestion.eventbrite import parse_eventbrite_event
 from ingestion.geocoding import normalize_address
-from ingestion.models import ParsedEventbriteListing
+from ingestion.models import ParsedListing
+from ingestion.sources import parse_source_listing
 
 CANONICAL_EVENT_NAMESPACE = uuid.UUID("d3c81426-26c5-49b9-bf16-c1d13aabedcb")
 WriteAction = Literal["created", "updated", "unchanged"]
@@ -25,7 +25,8 @@ class CanonicalizationCandidate:
 
     listing_id: uuid.UUID
     ingestion_run_id: uuid.UUID
-    listing: ParsedEventbriteListing
+    source: str
+    listing: ParsedListing
     normalized_address: str
 
 
@@ -47,30 +48,39 @@ class CanonicalEventRepository:
         self._database_url = database_url.replace("postgresql+psycopg://", "postgresql://", 1)
 
     def candidates(self) -> tuple[CanonicalizationCandidate, ...]:
-        """Return new or freshly re-scraped Eventbrite listings."""
+        """Return new or freshly re-scraped supported source listings."""
         with psycopg.connect(self._database_url) as connection:
             rows = connection.execute(
                 """
-                SELECT sl.id, sl.ingestion_run_id, sl.raw_payload
+                SELECT sl.id, sl.ingestion_run_id, sl.source, sl.raw_payload,
+                       market.timezone
                 FROM source_listing AS sl
+                JOIN ingest.run AS run ON run.id = sl.ingestion_run_id
+                JOIN ingest.market AS market ON market.id = run.market_id
                 LEFT JOIN canonical_event AS event ON event.id = sl.canonical_event_id
-                WHERE sl.source = 'eventbrite'
+                WHERE sl.source IN ('eventbrite', 'meetup')
                   AND (
                     sl.canonical_event_id IS NULL
                     OR event.updated_at IS NULL
                     OR sl.last_seen_at > event.updated_at
                   )
-                ORDER BY sl.source_event_id
+                ORDER BY sl.source, sl.source_event_id
                 """
             ).fetchall()
 
         candidates: list[CanonicalizationCandidate] = []
-        for listing_id, ingestion_run_id, raw_payload in rows:
+        for listing_id, ingestion_run_id, source, raw_payload, market_timezone in rows:
             if isinstance(raw_payload, str):
                 raw_payload = json.loads(raw_payload)
             if not isinstance(raw_payload, dict):
                 raise TypeError("source_listing.raw_payload must be a JSON object")
-            listing = parse_eventbrite_event(cast(dict[str, object], raw_payload))
+            if not isinstance(source, str) or not isinstance(market_timezone, str):
+                raise TypeError("source and market timezone must be text")
+            listing = parse_source_listing(
+                source,
+                cast(dict[str, object], raw_payload),
+                market_timezone=market_timezone,
+            )
             if listing.venue_address is None:
                 continue
             if not isinstance(listing_id, uuid.UUID) or not isinstance(ingestion_run_id, uuid.UUID):
@@ -79,6 +89,7 @@ class CanonicalEventRepository:
                 CanonicalizationCandidate(
                     listing_id=listing_id,
                     ingestion_run_id=ingestion_run_id,
+                    source=source,
                     listing=listing,
                     normalized_address=normalize_address(listing.venue_address),
                 )
@@ -140,7 +151,7 @@ class CanonicalEventRepository:
 
             event_id = existing_event_id or uuid.uuid5(
                 CANONICAL_EVENT_NAMESPACE,
-                f"eventbrite:{candidate.listing.source_event_id}",
+                f"{candidate.source}:{candidate.listing.source_event_id}",
             )
             row = connection.execute(
                 """

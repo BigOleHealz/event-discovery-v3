@@ -59,6 +59,7 @@ def build_ingest_eventbrite():
                 "market_id": str(group.market_id),
                 "market_slug": group.market_slug,
                 "market_name": group.market_name,
+                "market_timezone": group.market_timezone,
                 "targets": [
                     {
                         "id": str(target.id),
@@ -96,12 +97,11 @@ def build_ingest_eventbrite():
             else config.web_base_url
         )
         market_id = uuid.UUID(str(market_config["market_id"]))
-        market_slug = str(market_config["market_slug"])
         run_id = _repository().open_run(
             dag_id=DAG_ID,
             airflow_run_id=airflow_run_id,
+            source="eventbrite",
             source_url=source_url,
-            city=market_slug,
             market_id=market_id,
             categories=tuple(str(target["category"]) for target in raw_targets),
             window_start=window_start,

@@ -14,9 +14,9 @@ from ingestion.eventbrite import (
     EventbriteListingClient,
     EventbriteRateLimited,
     EventDetailFetcher,
-    parse_eventbrite_event,
     staging_identity,
 )
+from ingestion.meetup import MeetupClient
 from ingestion.models import (
     CrawlMarketTargets,
     CrawlTarget,
@@ -26,9 +26,12 @@ from ingestion.models import (
     EventbriteSearchTarget,
     FetchedPage,
     FilteredParseSummary,
+    MeetupCrawlSummary,
+    MeetupSearchTarget,
     ParsedEventbriteListing,
 )
 from ingestion.online_filter import apply_online_filter
+from ingestion.sources import parse_source_listing, source_identity
 
 LOGGER = logging.getLogger(__name__)
 
@@ -46,6 +49,7 @@ def group_crawl_targets_by_market(
             market_id=market_id,
             market_slug=rows[0].market_slug,
             market_name=rows[0].market_name,
+            market_timezone=rows[0].market_timezone,
             targets=tuple(rows),
         )
         for (source, market_id), rows in grouped.items()
@@ -149,21 +153,30 @@ def fetch_and_stage_eventbrite_details(
 
 
 def parse_staged(
-    *, repository: IngestionRepository, run_id: uuid.UUID
+    *, repository: IngestionRepository, run_id: uuid.UUID, source: str = "eventbrite"
 ) -> tuple[ParsedEventbriteListing, ...]:
     """Parse only payloads already committed to source_listing.raw_payload."""
-    return tuple(parse_eventbrite_event(payload) for payload in repository.staged_payloads(run_id))
+    market_timezone = repository.run_market_timezone(run_id)
+    return tuple(
+        parse_source_listing(source, payload, market_timezone=market_timezone)
+        for payload in repository.staged_payloads(run_id, source=source)
+    )
 
 
 def parse_and_filter_staged(
-    *, repository: IngestionRepository, run_id: uuid.UUID, clock: Clock
+    *,
+    repository: IngestionRepository,
+    run_id: uuid.UUID,
+    clock: Clock,
+    source: str = "eventbrite",
 ) -> FilteredParseSummary:
     """Parse staged payloads, persist every rejection, and return only in-person listings."""
     accepted: list[ParsedEventbriteListing] = []
     rejected_online = 0
     rejected_no_location = 0
-    for payload in repository.staged_payloads(run_id):
-        listing = parse_eventbrite_event(payload)
+    market_timezone = repository.run_market_timezone(run_id)
+    for payload in repository.staged_payloads(run_id, source=source):
+        listing = parse_source_listing(source, payload, market_timezone=market_timezone)
         decision = apply_online_filter(listing)
         if decision.keep:
             accepted.append(listing)
@@ -175,9 +188,11 @@ def parse_and_filter_staged(
             payload=payload,
             reason=decision.reason,
             rejected_at=clock(),
+            source=source,
         )
         LOGGER.info(
-            "Rejected Eventbrite listing %s via %s",
+            "Rejected %s listing %s via %s",
+            source,
             listing.source_event_id,
             decision.rule,
         )
@@ -189,6 +204,37 @@ def parse_and_filter_staged(
         accepted=tuple(accepted),
         rejected_online=rejected_online,
         rejected_no_location=rejected_no_location,
+    )
+
+
+def crawl_and_stage_meetup(
+    *,
+    client: MeetupClient,
+    targets: Iterable[MeetupSearchTarget],
+    repository: IngestionRepository,
+    run_id: uuid.UUID,
+    clock: Clock,
+) -> MeetupCrawlSummary:
+    """Record Meetup pages, union exact ids across targets, then stage each payload once."""
+    pages_fetched = 0
+    listing_appearances = 0
+    events: dict[str, dict[str, object]] = {}
+    for target in targets:
+        for page in client.iter_event_pages(target):
+            repository.record_page_fetch(run_id=run_id, page=page, fetched_at=clock())
+            pages_fetched += 1
+            listing_appearances += len(page.events)
+            for payload in page.events:
+                event_id, _ = source_identity("meetup", payload)
+                events.setdefault(event_id, payload)
+    for payload in events.values():
+        repository.stage_source_payload(
+            source="meetup", run_id=run_id, payload=payload, seen_at=clock()
+        )
+    return MeetupCrawlSummary(
+        pages_fetched=pages_fetched,
+        listing_appearances=listing_appearances,
+        events=tuple(events.values()),
     )
 
 
