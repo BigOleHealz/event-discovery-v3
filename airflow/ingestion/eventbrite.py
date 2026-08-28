@@ -60,10 +60,6 @@ class EventbriteConfig:
     api_token: str
     api_base_url: str
     web_base_url: str
-    locations: tuple[str, ...]
-    categories: tuple[str, ...]
-    window_days: int
-    page_cap: int
     request_timeout_seconds: float
     detail_cache_ttl_hours: float
 
@@ -84,17 +80,10 @@ class EventbriteConfig:
         if not web_base_url:
             raise EventbriteConfigurationError("EVENTBRITE_WEB_BASE_URL is required")
 
-        locations = _csv_from_env("EVENTBRITE_LOCATIONS", "pa--philadelphia")
-        categories = _csv_from_env("EVENTBRITE_CATEGORIES", "science-and-tech,food-and-drink")
-
         return cls(
             api_token=api_token,
             api_base_url=api_base_url,
             web_base_url=web_base_url,
-            locations=locations,
-            categories=categories,
-            window_days=_positive_int_from_env("EVENTBRITE_WINDOW_DAYS", 5),
-            page_cap=_positive_int_from_env("EVENTBRITE_PAGE_CAP", 20),
             request_timeout_seconds=_positive_float_from_env(
                 "EVENTBRITE_REQUEST_TIMEOUT_SECONDS", 30.0
             ),
@@ -106,7 +95,7 @@ class EventbriteConfig:
     def listing_url(self, target: EventbriteSearchTarget, page_number: int) -> str:
         """Return one configured public discovery URL."""
         return (
-            f"{self.web_base_url}/d/{target.location}/{target.category}--events/"
+            f"{self.web_base_url}/d/{target.location_slug}/{target.category}--events/"
             f"?page={page_number}&start_date={target.window_start.isoformat()}"
             f"&end_date={target.window_end.isoformat()}"
         )
@@ -114,6 +103,20 @@ class EventbriteConfig:
     def detail_url(self, event_id: str) -> str:
         """Return the official per-event detail API URL."""
         return f"{self.api_base_url}/events/{event_id}/"
+
+
+def eventbrite_location_slug(source_location: Mapping[str, object]) -> str:
+    """Validate and return Eventbrite's source-native public-search slug."""
+    if source_location.get("kind") != "eventbrite_slug":
+        raise EventbriteConfigurationError(
+            "Eventbrite source_location.kind must be 'eventbrite_slug'"
+        )
+    slug = source_location.get("slug")
+    if not isinstance(slug, str) or not slug.strip():
+        raise EventbriteConfigurationError(
+            "Eventbrite source_location.slug must be a non-empty string"
+        )
+    return slug.strip()
 
 
 class EventbriteListingClient:
@@ -145,7 +148,7 @@ class EventbriteListingClient:
     def iter_listing_pages(self, target: EventbriteSearchTarget) -> Iterator[EventbriteListingPage]:
         """Yield pages until empty, repeated, or capped, recording the terminal fetch."""
         previous_ids: frozenset[str] | None = None
-        for page_number in range(1, self._config.page_cap + 1):
+        for page_number in range(1, target.page_cap + 1):
             url = self._config.listing_url(target, page_number)
             started = monotonic()
             response = self._client.get(url)
@@ -155,6 +158,7 @@ class EventbriteListingClient:
                 response.content, web_base_url=self._config.web_base_url
             )
             yield EventbriteListingPage(
+                crawl_target_id=target.crawl_target_id,
                 url=str(response.request.url),
                 search_target=target.label,
                 page_number=page_number,
@@ -170,7 +174,7 @@ class EventbriteListingClient:
         else:
             LOGGER.warning(
                 "Eventbrite page cap %s reached for %s; split the date window",
-                self._config.page_cap,
+                target.page_cap,
                 target.label,
             )
 
@@ -434,17 +438,6 @@ def _parse_datetime(value: str, field: str) -> datetime:
     return parsed
 
 
-def _positive_int_from_env(name: str, default: int) -> int:
-    raw = os.environ.get(name, "").strip() or str(default)
-    try:
-        value = int(raw)
-    except ValueError as error:
-        raise EventbriteConfigurationError(f"{name} must be an integer") from error
-    if value <= 0:
-        raise EventbriteConfigurationError(f"{name} must be positive")
-    return value
-
-
 def _positive_float_from_env(name: str, default: float) -> float:
     raw = os.environ.get(name, "").strip() or str(default)
     try:
@@ -454,12 +447,3 @@ def _positive_float_from_env(name: str, default: float) -> float:
     if value <= 0:
         raise EventbriteConfigurationError(f"{name} must be positive")
     return value
-
-
-def _csv_from_env(name: str, default: str) -> tuple[str, ...]:
-    values = tuple(
-        value.strip() for value in os.environ.get(name, default).split(",") if value.strip()
-    )
-    if not values:
-        raise EventbriteConfigurationError(f"{name} must contain at least one value")
-    return values

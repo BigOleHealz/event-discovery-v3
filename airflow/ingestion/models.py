@@ -1,5 +1,7 @@
 """Typed values passed between Eventbrite ingestion steps."""
 
+import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -38,13 +40,49 @@ class FetchedPage:
 
 
 @dataclass(frozen=True)
-class EventbriteSearchTarget:
-    """One public Eventbrite listing query within a location crawl."""
+class CrawlTarget:
+    """One source query attached to a canonical market."""
 
-    location: str
+    id: uuid.UUID
+    source: str
+    market_id: uuid.UUID
+    market_slug: str
+    market_name: str
+    source_location: Mapping[str, object]
+    category: str
+    window_days: int
+    page_cap: int
+
+
+@dataclass(frozen=True)
+class CrawlMarketTargets:
+    """Enabled targets that share one independently tracked canonical market run."""
+
+    source: str
+    market_id: uuid.UUID
+    market_slug: str
+    market_name: str
+    targets: tuple[CrawlTarget, ...]
+
+    @property
+    def categories(self) -> tuple[str, ...]:
+        return tuple(target.category for target in self.targets)
+
+    @property
+    def maximum_window_days(self) -> int:
+        return max(target.window_days for target in self.targets)
+
+
+@dataclass(frozen=True)
+class EventbriteSearchTarget:
+    """One public Eventbrite listing query within a canonical market crawl."""
+
+    crawl_target_id: uuid.UUID
+    location_slug: str
     category: str
     window_start: date
     window_end: date
+    page_cap: int
 
     @property
     def label(self) -> str:
@@ -63,6 +101,7 @@ class EventbriteEventReference:
 class EventbriteListingPage:
     """One fetched public listing page and its unique event references."""
 
+    crawl_target_id: uuid.UUID
     url: str
     search_target: str
     page_number: int

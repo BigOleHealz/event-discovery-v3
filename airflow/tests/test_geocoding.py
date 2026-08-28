@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -53,9 +54,7 @@ def test_config_uses_default_timeout_for_a_blank_environment_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("GOOGLE_GEOCODING_API_KEY", "recorded-google-test-key")
-    monkeypatch.setenv(
-        "GOOGLE_GEOCODING_API_BASE_URL", "https://geocode.test/v4/geocode/address"
-    )
+    monkeypatch.setenv("GOOGLE_GEOCODING_API_BASE_URL", "https://geocode.test/v4/geocode/address")
     monkeypatch.setenv("GOOGLE_GEOCODING_TIMEOUT_SECONDS", "")
 
     parsed = GoogleGeocodingConfig.from_env()
@@ -79,6 +78,7 @@ def stage_event(database_url: str) -> None:
         dag_id="ingest_eventbrite",
         airflow_run_id="geocoding-test-run",
         source_url="https://eventbrite.test/v3/organizations/recorded/events/",
+        market_id=uuid.UUID("8a7a04d3-7fb6-4cdb-a3d7-e5f08cf48bed"),
         city="Philadelphia",
         started_at=FROZEN_TIME,
     )

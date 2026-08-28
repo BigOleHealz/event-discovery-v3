@@ -49,10 +49,12 @@ testing; production should use a project-owned map ID and an HTTP-referrer-restr
 
 For Eventbrite ingestion, set `EVENTBRITE_API_TOKEN` to the app's private token. Public
 listing pages supply discovery ids; the official per-event endpoint supplies parser-ready
-detail payloads. `EVENTBRITE_LOCATIONS` creates one independently tracked run per location,
-while `EVENTBRITE_CATEGORIES` is unioned inside each location run before detail calls. The
-default five-day window, page cap, and detail-cache TTL are configurable through environment
-variables in `.env.example`.
+detail payloads. `ingest.market` defines source-independent markets, while enabled rows in
+`ingest.crawl_target` define each source's native location JSON, category, window size, and
+page cap. The DAG groups those rows into one independently tracked run per canonical market
+and unions ids before detail calls.
+API credentials, schedules, request timeouts, and the detail-cache TTL remain environment
+configuration.
 
 The hourly geocoder uses Google Geocoding API v4. Set `GOOGLE_GEOCODING_API_KEY` to a
 server-side key restricted to the Geocoding API; do not reuse the browser-referrer key.

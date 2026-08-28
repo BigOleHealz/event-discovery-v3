@@ -25,11 +25,13 @@ EXPECTED_TABLES = (
     "saved_search_hit",
 )
 EXPECTED_INGEST_TABLES = {
+    "crawl_target",
     "event_detail_cache",
     "run",
     "page_fetch",
     "rejected_listing",
     "geocode_cache",
+    "market",
 }
 
 
@@ -97,6 +99,7 @@ def test_migrations_seed_and_constraints(database_url: str) -> None:
             "listing_appearances",
             "detail_fetched",
             "detail_cached",
+            "market_id",
         } <= run_columns
         page_columns = {
             str(row.column_name)
@@ -110,7 +113,75 @@ def test_migrations_seed_and_constraints(database_url: str) -> None:
                 )
             )
         }
-        assert {"search_target", "page_number"} <= page_columns
+        assert {"crawl_target_id", "search_target", "page_number"} <= page_columns
+
+        targets = connection.execute(
+            text(
+                """
+                SELECT target.source, market.slug, target.source_location,
+                       target.category, target.window_days, target.page_cap, target.enabled
+                FROM ingest.crawl_target AS target
+                JOIN ingest.market AS market ON market.id = target.market_id
+                ORDER BY category
+                """
+            )
+        ).all()
+        assert targets == [
+            (
+                "eventbrite",
+                "philadelphia-pa",
+                {"kind": "eventbrite_slug", "slug": "pa--philadelphia"},
+                "food-and-drink",
+                5,
+                20,
+                True,
+            ),
+            (
+                "eventbrite",
+                "philadelphia-pa",
+                {"kind": "eventbrite_slug", "slug": "pa--philadelphia"},
+                "science-and-tech",
+                5,
+                20,
+                True,
+            ),
+        ]
+
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO ingest.crawl_target (
+                    id, source, market_id, source_location, category,
+                    window_days, page_cap
+                ) VALUES (
+                    :id, 'eventbrite',
+                    '8a7a04d3-7fb6-4cdb-a3d7-e5f08cf48bed',
+                    '{"kind":"eventbrite_slug","slug":"pa--philadelphia"}'::jsonb,
+                    'food-and-drink', 5, 20
+                )
+                """
+            ),
+            {"id": uuid4()},
+        )
+
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO ingest.crawl_target (
+                    id, source, market_id, source_location, category,
+                    window_days, page_cap
+                ) VALUES (
+                    :id, 'eventbrite',
+                    '8a7a04d3-7fb6-4cdb-a3d7-e5f08cf48bed',
+                    '{"kind":"eventbrite_slug","slug":"pa--philadelphia"}'::jsonb,
+                    'music', 5, 0
+                )
+                """
+            ),
+            {"id": uuid4()},
+        )
 
     seed_database(engine)
     seed_database(engine)
@@ -169,6 +240,32 @@ def test_migrations_seed_and_constraints(database_url: str) -> None:
                 """
             ),
             {"id": uuid4(), "run_id": missing_run_id},
+        )
+
+    registry_run_id = uuid4()
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO ingest.run (
+                    id, run_date, source, city_searched, started_at, status
+                ) VALUES (
+                    :id, CURRENT_DATE, 'eventbrite', 'pa--philadelphia', now(), 'running'
+                )
+                """
+            ),
+            {"id": registry_run_id},
+        )
+
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO ingest.page_fetch (id, run_id, crawl_target_id, url)
+                VALUES (:id, :run_id, :target_id, 'https://example.test/events')
+                """
+            ),
+            {"id": uuid4(), "run_id": registry_run_id, "target_id": uuid4()},
         )
 
     with pytest.raises(IntegrityError), engine.begin() as connection:

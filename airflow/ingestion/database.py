@@ -11,7 +11,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from ingestion.eventbrite import staging_identity
-from ingestion.models import EventbriteListingPage, FetchedPage
+from ingestion.models import CrawlTarget, EventbriteListingPage, FetchedPage
 
 RUN_NAMESPACE = uuid.UUID("09ab41b7-5cd1-4328-813c-f2becd62ce20")
 LISTING_NAMESPACE = uuid.UUID("a276b217-3c85-42ea-81a7-a7b26ba6025e")
@@ -25,12 +25,66 @@ class IngestionRepository:
     def __init__(self, database_url: str) -> None:
         self._database_url = _psycopg_url(database_url)
 
+    def enabled_crawl_targets(self, *, source: str) -> tuple[CrawlTarget, ...]:
+        """Load the authoritative enabled target inventory for one source."""
+        with psycopg.connect(self._database_url) as connection:
+            rows = connection.execute(
+                """
+                SELECT target.id, target.source, target.market_id, market.slug,
+                       market.name, target.source_location, target.category,
+                       target.window_days, target.page_cap
+                FROM ingest.crawl_target AS target
+                JOIN ingest.market AS market ON market.id = target.market_id
+                WHERE target.source = %(source)s AND target.enabled
+                ORDER BY market.slug, target.category, target.id
+                """,
+                {"source": source},
+            ).fetchall()
+        targets: list[CrawlTarget] = []
+        for row in rows:
+            (
+                target_id,
+                row_source,
+                market_id,
+                market_slug,
+                market_name,
+                source_location,
+                category,
+                window_days,
+                page_cap,
+            ) = row
+            if not isinstance(target_id, uuid.UUID) or not isinstance(market_id, uuid.UUID):
+                raise TypeError("crawl_target.id and market_id must be UUIDs")
+            if not all(
+                isinstance(value, str) for value in (row_source, market_slug, market_name, category)
+            ):
+                raise TypeError("crawl target source, market, and category must be text")
+            if not isinstance(source_location, dict):
+                raise TypeError("crawl_target.source_location must be a JSON object")
+            if not isinstance(window_days, int) or not isinstance(page_cap, int):
+                raise TypeError("crawl_target window_days and page_cap must be integers")
+            targets.append(
+                CrawlTarget(
+                    id=target_id,
+                    source=row_source,
+                    market_id=market_id,
+                    market_slug=market_slug,
+                    market_name=market_name,
+                    source_location=source_location,
+                    category=category,
+                    window_days=window_days,
+                    page_cap=page_cap,
+                )
+            )
+        return tuple(targets)
+
     def open_run(
         self,
         *,
         dag_id: str,
         airflow_run_id: str,
         source_url: str,
+        market_id: uuid.UUID,
         city: str,
         started_at: datetime,
         categories: tuple[str, ...] = (),
@@ -43,14 +97,14 @@ class IngestionRepository:
             connection.execute(
                 """
                 INSERT INTO ingest.run (
-                    id, run_date, source, source_url, city_searched, categories,
+                    id, run_date, source, source_url, city_searched, market_id, categories,
                     window_start, window_end, started_at, finished_at, status,
                     listing_appearances, events_found, detail_fetched, detail_cached,
                     events_new, events_updated, events_deduped, events_rejected_online,
                     error_message, airflow_dag_id, airflow_run_id
                 ) VALUES (
                     %(id)s, %(run_date)s, 'eventbrite', %(source_url)s, %(city)s,
-                    %(categories)s, %(window_start)s, %(window_end)s, %(started_at)s,
+                    %(market_id)s, %(categories)s, %(window_start)s, %(window_end)s, %(started_at)s,
                     NULL, 'running', 0, 0, 0, 0, 0, 0, 0, 0, NULL,
                     %(dag_id)s, %(airflow_run_id)s
                 )
@@ -58,6 +112,7 @@ class IngestionRepository:
                     run_date = EXCLUDED.run_date,
                     source_url = EXCLUDED.source_url,
                     city_searched = EXCLUDED.city_searched,
+                    market_id = EXCLUDED.market_id,
                     categories = EXCLUDED.categories,
                     window_start = EXCLUDED.window_start,
                     window_end = EXCLUDED.window_end,
@@ -79,6 +134,7 @@ class IngestionRepository:
                     "run_date": started_at.date(),
                     "source_url": source_url,
                     "city": city,
+                    "market_id": market_id,
                     "categories": list(categories),
                     "window_start": window_start,
                     "window_end": window_end,
@@ -102,14 +158,15 @@ class IngestionRepository:
             connection.execute(
                 """
                 INSERT INTO ingest.page_fetch (
-                    id, run_id, url, search_target, page_number, http_status,
-                    fetch_method, duration_ms, bytes, error_message, fetched_at
+                    id, run_id, crawl_target_id, url, search_target, page_number,
+                    http_status, fetch_method, duration_ms, bytes, error_message, fetched_at
                 ) VALUES (
-                    %(id)s, %(run_id)s, %(url)s, %(search_target)s, %(page_number)s,
-                    %(http_status)s, 'http', %(duration_ms)s, %(bytes)s, NULL,
-                    %(fetched_at)s
+                    %(id)s, %(run_id)s, %(crawl_target_id)s, %(url)s,
+                    %(search_target)s, %(page_number)s, %(http_status)s, 'http',
+                    %(duration_ms)s, %(bytes)s, NULL, %(fetched_at)s
                 )
                 ON CONFLICT (id) DO UPDATE SET
+                    crawl_target_id = EXCLUDED.crawl_target_id,
                     search_target = EXCLUDED.search_target,
                     page_number = EXCLUDED.page_number,
                     http_status = EXCLUDED.http_status,
@@ -121,6 +178,7 @@ class IngestionRepository:
                 {
                     "id": fetch_id,
                     "run_id": run_id,
+                    "crawl_target_id": page.crawl_target_id,
                     "url": page.url,
                     "search_target": page.search_target,
                     "page_number": page.page_number,
