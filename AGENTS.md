@@ -77,13 +77,20 @@ lost to well-intentioned tidying. A shorter plan is not a better one.
 
 ## Commands
 
+Python tooling is per service: run it from `api/` or `airflow/`, never the repo root —
+there is no root `pyproject.toml` and no root `alembic.ini`. The root `tests/` holds
+fixtures and Compose scripts, not the Python suite.
+
 ```bash
-pytest                      # quiet by default, see pyproject.toml
-pytest -x                   # stop at first failure — use while iterating
-pytest tests/path::test_x   # single test
-docker compose up -d
-alembic upgrade head
-ruff check . && mypy .
+cd api                              # or: cd airflow
+rtk pytest
+rtk pytest -x                       # stop at first failure — use while iterating
+rtk pytest tests/test_events.py::test_name    # single test
+rtk ruff check . && rtk mypy        # mypy takes its packages from pyproject.toml
+rtk alembic upgrade head            # api/ only
+
+cd -                                # repo root
+rtk docker compose up -d
 ```
 
 @RTK.md
