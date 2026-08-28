@@ -243,12 +243,42 @@ which platform to register through.
 Separate schema (`ingest`) so operational data never mixes with product data.
 
 ```sql
+CREATE TABLE ingest.market (
+    id              UUID PRIMARY KEY,
+    slug            TEXT NOT NULL UNIQUE, -- canonical app identity, e.g. philadelphia-pa
+    name            TEXT NOT NULL,
+    city            TEXT NOT NULL,
+    region          TEXT,
+    country_code    CHAR(2) NOT NULL,
+    timezone        TEXT NOT NULL,
+    search_bounds   GEOGRAPHY(POLYGON, 4326),
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    updated_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE ingest.crawl_target (
+    id              UUID PRIMARY KEY,
+    source          TEXT NOT NULL,
+    market_id       UUID NOT NULL REFERENCES ingest.market(id),
+    source_location JSONB NOT NULL,      -- adapter-owned query shape; examples below
+    category        TEXT NOT NULL,       -- source-native slug, e.g. science-and-tech
+    enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+    window_days     SMALLINT NOT NULL DEFAULT 5 CHECK (window_days > 0),
+    page_cap        SMALLINT NOT NULL DEFAULT 20 CHECK (page_cap > 0),
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    updated_at      TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (source, market_id, category, source_location)
+);
+
+CREATE INDEX ON ingest.crawl_target (source, market_id) WHERE enabled;
+
 CREATE TABLE ingest.run (
     id              UUID PRIMARY KEY,
     run_date        DATE NOT NULL,
     source          TEXT NOT NULL,
     source_url      TEXT,
     city_searched   TEXT NOT NULL,
+    market_id       UUID REFERENCES ingest.market(id),
     search_bounds   GEOGRAPHY(POLYGON, 4326),
     categories      TEXT[],             -- categories crawled in this run
     window_start    DATE,               -- date window the crawl covered
@@ -275,6 +305,7 @@ CREATE TABLE ingest.run (
 CREATE TABLE ingest.page_fetch (
     id              UUID PRIMARY KEY,
     run_id          UUID REFERENCES ingest.run(id),
+    crawl_target_id UUID REFERENCES ingest.crawl_target(id),
     url             TEXT NOT NULL,
     search_target   TEXT,               -- 'science-and-tech:2026-08-27..2026-08-31'
     page_number     INT,
@@ -300,7 +331,15 @@ CREATE TABLE ingest.rejected_listing (
 );
 ```
 
-This gives per-day, per-source, per-city observability: what ran, what it found, what
+`ingest.market` is the app's source-independent place identity. `source_location` belongs
+to the source adapter and deliberately has no universal shape: Eventbrite uses
+`{"kind":"eventbrite_slug","slug":"pa--philadelphia"}`, while another platform may use
+coordinates and radius, an external region id, a bounding box, or multiple native fields.
+The adapter validates its own JSON object. This avoids pretending incompatible source
+location formats are the same while still grouping all Philadelphia work under one
+canonical market.
+
+This gives per-day, per-source, per-market observability: what ran, what it found, what
 broke, and how long it took.
 
 ### 3.3 Neo4j (relationships)
@@ -499,10 +538,28 @@ Eventbrite has **no public event search API** — `GET /v3/events/search/` was w
 2019. Discovery therefore comes from the public search pages; only the per-event detail
 comes from the API. Two stages.
 
-**Stage 1 — listing crawl.** The crawl target is a `(location, category, date_window)`
-tuple. **One `ingest.run` covers one `(source, location)` per scheduled execution**, and
+**Stage 1 — listing crawl.** The crawl target is a
+`(canonical_market, source_location, category, date_window)` tuple. **One `ingest.run`
+covers one `(source, canonical_market)` per scheduled execution**, and
 crawls every configured category and date window inside it — the tuple is the unit of
 *work*, not the unit of *run*.
+
+The authoritative target inventory lives in `ingest.crawl_target`, not in a growing pair
+of environment-variable lists. Each enabled row is one explicit
+source/market/category
+combination; this is intentional, because enabling `music` in Philadelphia must not
+silently enable it in every present or future city. At the start of an execution the DAG
+loads enabled rows, groups them by `(source, market_id)`, and snapshots the selected
+categories and date window into `ingest.run`. Configuration changes therefore affect the
+next execution, never a run already in progress. Targets with history are disabled rather
+than deleted so `ingest.page_fetch.crawl_target_id` remains useful for audits.
+
+The Phase 2 migration seeds the canonical Philadelphia market and its initial Eventbrite
+targets. Adding New York, another category, or a source-specific page cap after that is a
+database change and does not require rebuilding or redeploying Airflow. A new source maps
+its native location representation to an existing canonical market instead of reusing
+another source's format. Credentials, API base URLs, schedules, and service connection
+settings remain environment variables and are never stored in this table.
 
 The reason is quota. Ids must be unioned across all tuples before detail fetching, because
 the same event appears under several categories and in overlapping windows, and each
@@ -511,17 +568,20 @@ cross-category repeats. Per-tuple visibility is preserved through `ingest.page_f
 records the search target on every row, so "which category was thin last night?" is still a
 SQL question.
 
-Locations get separate runs. Philadelphia and a future New York crawl are independent, fail
-independently, and shouldn't share a partial status.
+Canonical markets get separate runs. Philadelphia and a future New York crawl are
+independent, fail independently, and shouldn't share a partial status. Different native
+location formats for the same market do not split its run.
 
 ```
 https://www.eventbrite.com/d/{location}/{category}--events/?page={n}&start_date={d1}&end_date={d2}
 ```
 
-- `location` — `pa--philadelphia` to start
+- `location` — read by the Eventbrite adapter from
+  `source_location={"kind":"eventbrite_slug","slug":"pa--philadelphia"}`; other source
+  adapters may require a different JSON shape
 - `category` — top-level slug in the path, not a query param. Start with
-  `science-and-tech` and `food-and-drink`; the list is config, not code, so adding
-  `music`, `arts`, etc. is a config change and a backfill run.
+  `science-and-tech` and `food-and-drink`; targets are data, not code, so adding `music`,
+  `arts`, etc. is an explicit row plus a backfill run.
 - `date_window` — short windows (3–5 days), rolled forward. Narrow windows keep each query
   under Eventbrite's paginated-result ceiling; a single city-wide unbounded query gets
   silently truncated.
@@ -536,9 +596,11 @@ Pagination rules, all of which matter:
 - Record every page fetch in `ingest.page_fetch`, so "did it paginate?" is answerable from
   SQL rather than by re-running.
 
-Stage 1 output is a set of event ids, parsed out of the event URL:
-`/e/{slug}-tickets-{event_id}`. Strip the `?aff=` query param — it's search attribution,
-not part of the canonical URL.
+Stage 1 output is a set of event ids, parsed from the numeric suffix of the event URL:
+`/e/{slug}-{event_id}`. Eventbrite currently emits variants including
+`-tickets-{event_id}` and `-registration-{event_id}`; cross-check the suffix against the id
+in `window.__SERVER_DATA__` rather than treating the preceding word as grammar. Strip the
+`?aff=` query param — it's search attribution, not part of the canonical URL.
 
 **Deduplicate ids within the crawl before staging.** The same event appears under multiple
 categories and in overlapping date windows, so a run will surface the same id repeatedly.
@@ -835,7 +897,10 @@ volumes: { pgdata: {}, neo4jdata: {}, qdrantdata: {} }
 
 So this lifts to the cloud without a rewrite:
 
-1. **All config via environment variables** — no config files baked into images
+1. **Process config via environment variables** — deployment-specific settings, service
+   connections, schedules, and secrets never live in images or the database. Mutable
+   operational inventories such as enabled crawl targets are application data in Postgres,
+   with changes audited through subsequent `ingest.run` snapshots.
 2. **No hardcoded service hostnames** — `POSTGRES_HOST`, `NEO4J_URI`, `QDRANT_URL` etc.,
    defaulted to Compose service names but always overridable
 3. **Named volumes for all stateful services** — never state inside a container layer
@@ -891,6 +956,10 @@ installs to a phone home screen.
 - **2d** — Upsert into `canonical_event` + `source_listing` (one canonical per listing for
   now, no dedup)
 - **2e** — Map shows real scraped events; event detail slide-over with registration link
+- **2f** — DB-backed canonical `ingest.market` registry plus `ingest.crawl_target` rows
+  seeded for Philadelphia/Eventbrite. Each target keeps adapter-owned `source_location`
+  JSON, while DAG runs group by `(source, market_id)`; independent multi-market behavior
+  and incompatible source-native location shapes are covered by tests
 
 *Done when:* a nightly DAG run puts genuine Eventbrite events on the map.
 

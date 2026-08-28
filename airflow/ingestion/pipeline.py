@@ -18,6 +18,8 @@ from ingestion.eventbrite import (
     staging_identity,
 )
 from ingestion.models import (
+    CrawlMarketTargets,
+    CrawlTarget,
     EventbriteCrawlSummary,
     EventbriteDetailSummary,
     EventbriteEventReference,
@@ -29,6 +31,25 @@ from ingestion.models import (
 from ingestion.online_filter import apply_online_filter
 
 LOGGER = logging.getLogger(__name__)
+
+
+def group_crawl_targets_by_market(
+    targets: Iterable[CrawlTarget],
+) -> tuple[CrawlMarketTargets, ...]:
+    """Group source-native queries into independently tracked canonical market runs."""
+    grouped: dict[tuple[str, uuid.UUID], list[CrawlTarget]] = {}
+    for target in targets:
+        grouped.setdefault((target.source, target.market_id), []).append(target)
+    return tuple(
+        CrawlMarketTargets(
+            source=source,
+            market_id=market_id,
+            market_slug=rows[0].market_slug,
+            market_name=rows[0].market_name,
+            targets=tuple(rows),
+        )
+        for (source, market_id), rows in grouped.items()
+    )
 
 
 def fetch_and_stage(

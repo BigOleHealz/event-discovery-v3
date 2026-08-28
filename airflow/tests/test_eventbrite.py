@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -13,9 +14,11 @@ import pytest
 from ingestion.eventbrite import (
     ApiEventDetailFetcher,
     EventbriteConfig,
+    EventbriteConfigurationError,
     EventbriteListingClient,
     EventbriteParseError,
     JsonLdEventDetailFetcher,
+    eventbrite_location_slug,
     parse_eventbrite_event,
     parse_listing_event_references,
     parse_rate_limit_header,
@@ -40,10 +43,6 @@ def config() -> EventbriteConfig:
         api_token="recorded-test-token",
         api_base_url="https://eventbrite.test/v3",
         web_base_url="https://www.eventbrite.com",
-        locations=("pa--philadelphia",),
-        categories=("science-and-tech", "food-and-drink"),
-        window_days=5,
-        page_cap=10,
         request_timeout_seconds=5,
         detail_cache_ttl_hours=24,
     )
@@ -51,11 +50,24 @@ def config() -> EventbriteConfig:
 
 def target(category: str = "science-and-tech") -> EventbriteSearchTarget:
     return EventbriteSearchTarget(
-        location="pa--philadelphia",
+        crawl_target_id=uuid.UUID("4c33ed98-a96b-4d72-946f-5bd923db9506"),
+        location_slug="pa--philadelphia",
         category=category,
         window_start=date(2026, 8, 27),
         window_end=date(2026, 8, 31),
+        page_cap=10,
     )
+
+
+def test_eventbrite_adapter_validates_its_source_native_location() -> None:
+    assert (
+        eventbrite_location_slug({"kind": "eventbrite_slug", "slug": "pa--philadelphia"})
+        == "pa--philadelphia"
+    )
+    with pytest.raises(EventbriteConfigurationError, match="kind"):
+        eventbrite_location_slug(
+            {"kind": "coordinates_radius", "latitude": 39.95, "longitude": -75.16}
+        )
 
 
 def test_config_uses_numeric_defaults_for_blank_environment_values(
@@ -63,15 +75,11 @@ def test_config_uses_numeric_defaults_for_blank_environment_values(
 ) -> None:
     monkeypatch.setenv("EVENTBRITE_API_TOKEN", "recorded-test-token")
     monkeypatch.setenv("EVENTBRITE_API_BASE_URL", "https://eventbrite.test/v3")
-    monkeypatch.setenv("EVENTBRITE_WINDOW_DAYS", "")
-    monkeypatch.setenv("EVENTBRITE_PAGE_CAP", "")
     monkeypatch.setenv("EVENTBRITE_REQUEST_TIMEOUT_SECONDS", "")
     monkeypatch.setenv("EVENTBRITE_DETAIL_CACHE_TTL_HOURS", "")
 
     parsed = EventbriteConfig.from_env()
 
-    assert parsed.window_days == 5
-    assert parsed.page_cap == 20
     assert parsed.request_timeout_seconds == 30
     assert parsed.detail_cache_ttl_hours == 24
 
@@ -81,8 +89,7 @@ def listing_document(urls: list[str]) -> bytes:
         "search_data": {
             "events": {
                 "results": [
-                    {"id": url.split("?", 1)[0].rsplit("-", 1)[-1], "url": url}
-                    for url in urls
+                    {"id": url.split("?", 1)[0].rsplit("-", 1)[-1], "url": url} for url in urls
                 ],
                 "promoted_results": [],
                 "pagination": {},
@@ -115,9 +122,7 @@ def test_pagination_stops_after_an_empty_page() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         page = request.url.params["page"]
         requested_pages.append(page)
-        content = (
-            LISTING_FIXTURE_PATH.read_bytes() if page == "1" else listing_document([])
-        )
+        content = LISTING_FIXTURE_PATH.read_bytes() if page == "1" else listing_document([])
         return httpx.Response(200, content=content, request=request)
 
     with EventbriteListingClient(config(), transport=httpx.MockTransport(handler)) as client:
@@ -150,16 +155,12 @@ def test_page_cap_logs_a_warning_and_halts() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         requested_pages.append(request.url.params["page"])
         event_id = 1000 + int(request.url.params["page"])
-        content = listing_document(
-            [f"https://www.eventbrite.com/e/test-tickets-{event_id}"]
-        )
+        content = listing_document([f"https://www.eventbrite.com/e/test-tickets-{event_id}"])
         return httpx.Response(200, content=content, request=request)
 
     with patch("ingestion.eventbrite.LOGGER.warning") as warning:
-        with EventbriteListingClient(
-            replace(config(), page_cap=2), transport=httpx.MockTransport(handler)
-        ) as client:
-            pages = tuple(client.iter_listing_pages(target()))
+        with EventbriteListingClient(config(), transport=httpx.MockTransport(handler)) as client:
+            pages = tuple(client.iter_listing_pages(replace(target(), page_cap=2)))
 
     assert len(pages) == 2
     assert requested_pages == ["1", "2"]

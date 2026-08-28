@@ -20,6 +20,7 @@ from ingestion.models import (
 from ingestion.pipeline import (
     crawl_eventbrite_location,
     fetch_and_stage_eventbrite_details,
+    group_crawl_targets_by_market,
 )
 
 DETAIL_FIXTURE_PATH = (
@@ -52,11 +53,17 @@ def detail(event_id: str = "1999042913166") -> dict[str, object]:
 
 
 def target(category: str) -> EventbriteSearchTarget:
+    target_ids = {
+        "science-and-tech": uuid.UUID("4c33ed98-a96b-4d72-946f-5bd923db9506"),
+        "food-and-drink": uuid.UUID("a8ddad4f-d5af-4f24-a8a6-99e10aa3d76f"),
+    }
     return EventbriteSearchTarget(
-        location="pa--philadelphia",
+        crawl_target_id=target_ids[category],
+        location_slug="pa--philadelphia",
         category=category,
         window_start=date(2026, 8, 27),
         window_end=date(2026, 8, 31),
+        page_cap=20,
     )
 
 
@@ -65,6 +72,7 @@ def open_run(repository: IngestionRepository, airflow_run_id: str) -> uuid.UUID:
         dag_id="ingest_eventbrite",
         airflow_run_id=airflow_run_id,
         source_url="https://www.eventbrite.com/d/pa--philadelphia/",
+        market_id=uuid.UUID("8a7a04d3-7fb6-4cdb-a3d7-e5f08cf48bed"),
         city="pa--philadelphia",
         categories=("science-and-tech", "food-and-drink"),
         window_start=date(2026, 8, 27),
@@ -83,6 +91,7 @@ class RepeatingListingClient:
         )
         return (
             EventbriteListingPage(
+                crawl_target_id=search_target.crawl_target_id,
                 url=f"https://eventbrite.test/{search_target.category}?page=1",
                 search_target=search_target.label,
                 page_number=1,
@@ -112,6 +121,83 @@ class RateLimitedAfterOneFetcher:
         if self.calls == 2:
             raise EventbriteRateLimited(60)
         return detail(event_id)
+
+
+def test_database_targets_group_into_independent_market_runs(database_url: str) -> None:
+    new_york_market_id = uuid.uuid4()
+    with psycopg.connect(psycopg_url(database_url)) as connection:
+        connection.execute(
+            """
+            INSERT INTO ingest.market (
+                id, slug, name, city, region, country_code, timezone
+            ) VALUES (%s, 'new-york-ny', 'New York', 'New York', 'NY', 'US',
+                      'America/New_York')
+            """,
+            (new_york_market_id,),
+        )
+        connection.execute(
+            """
+            INSERT INTO ingest.crawl_target (
+                id, source, market_id, source_location, category, enabled,
+                window_days, page_cap
+            ) VALUES
+                (%s, 'eventbrite', %s,
+                 '{"kind":"eventbrite_slug","slug":"ny--new-york"}'::jsonb,
+                 'music', true, 3, 12),
+                (%s, 'eventbrite', %s,
+                 '{"kind":"eventbrite_slug","slug":"ny--new-york"}'::jsonb,
+                 'food-and-drink', false, 4, 8)
+            """,
+            (
+                uuid.uuid4(),
+                new_york_market_id,
+                uuid.uuid4(),
+                new_york_market_id,
+            ),
+        )
+
+    repository = IngestionRepository(database_url)
+    groups = group_crawl_targets_by_market(repository.enabled_crawl_targets(source="eventbrite"))
+
+    assert [(group.source, group.market_slug) for group in groups] == [
+        ("eventbrite", "new-york-ny"),
+        ("eventbrite", "philadelphia-pa"),
+    ]
+    assert groups[0].categories == ("music",)
+    assert groups[0].maximum_window_days == 3
+    assert groups[0].targets[0].page_cap == 12
+    assert groups[1].categories == ("food-and-drink", "science-and-tech")
+
+
+def test_source_native_location_can_use_another_platforms_shape(database_url: str) -> None:
+    target_id = uuid.uuid4()
+    with psycopg.connect(psycopg_url(database_url)) as connection:
+        connection.execute(
+            """
+            INSERT INTO ingest.crawl_target (
+                id, source, market_id, source_location, category, enabled,
+                window_days, page_cap
+            ) VALUES (
+                %s, 'coordinate-source',
+                '8a7a04d3-7fb6-4cdb-a3d7-e5f08cf48bed',
+                '{"kind":"coordinates_radius","latitude":39.9526,
+                  "longitude":-75.1652,"radius_km":40}'::jsonb,
+                'all', true, 5, 10
+            )
+            """,
+            (target_id,),
+        )
+
+    targets = IngestionRepository(database_url).enabled_crawl_targets(source="coordinate-source")
+
+    assert len(targets) == 1
+    assert targets[0].market_slug == "philadelphia-pa"
+    assert targets[0].source_location == {
+        "kind": "coordinates_radius",
+        "latitude": 39.9526,
+        "longitude": -75.1652,
+        "radius_km": 40,
+    }
 
 
 def test_cross_category_id_is_staged_once_and_then_served_from_cache(
@@ -158,6 +244,14 @@ def test_cross_category_id_is_staged_once_and_then_served_from_cache(
         assert connection.execute("SELECT count(*) FROM source_listing").fetchone() == (1,)
         assert connection.execute(
             "SELECT count(*) FROM ingest.page_fetch WHERE run_id = %s", (first_run,)
+        ).fetchone() == (2,)
+        assert connection.execute(
+            """
+            SELECT count(*)
+            FROM ingest.page_fetch
+            WHERE run_id = %s AND crawl_target_id IS NOT NULL
+            """,
+            (first_run,),
         ).fetchone() == (2,)
 
 

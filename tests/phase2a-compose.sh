@@ -36,7 +36,17 @@ ingest_tables=$(
     psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --tuples-only --no-align \
     --command "SELECT string_agg(tablename, ',' ORDER BY tablename) FROM pg_catalog.pg_tables WHERE schemaname = 'ingest'"
 )
-test "$ingest_tables" = "event_detail_cache,geocode_cache,page_fetch,rejected_listing,run"
+test "$ingest_tables" = \
+  "crawl_target,event_detail_cache,geocode_cache,market,page_fetch,rejected_listing,run"
+
+crawl_targets=$(
+  docker compose --env-file "$env_file" --file "$compose_file" exec --no-TTY postgres \
+    psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --tuples-only --no-align \
+    --field-separator ',' \
+    --command "SELECT market.slug, target.source_location->>'slug', target.category, target.window_days, target.page_cap FROM ingest.crawl_target AS target JOIN ingest.market AS market ON market.id = target.market_id WHERE target.source = 'eventbrite' AND target.enabled ORDER BY target.category"
+)
+test "$crawl_targets" = \
+  $'philadelphia-pa,pa--philadelphia,food-and-drink,5,20\nphiladelphia-pa,pa--philadelphia,science-and-tech,5,20'
 
 airflow_database=$(
   docker compose --env-file "$env_file" --file "$compose_file" exec --no-TTY postgres \
@@ -50,11 +60,11 @@ dag_tasks=$(
     airflow-api-server airflow tasks list ingest_eventbrite
 )
 test "$(printf '%s\n' "$dag_tasks" | sort | tr '\n' ',')" = \
-  "close_run,collect_ids,configured_locations,fetch_details,fetch_pages,open_run,parse_listings,"
+  "close_run,collect_ids,configured_markets,fetch_details,fetch_pages,open_run,parse_listings,"
 
 docker compose --env-file "$env_file" --file "$compose_file" exec --no-TTY \
   airflow-api-server python -c \
-  'import sys; sys.path.insert(0, "/opt/airflow/dags"); from ingest_eventbrite import ingest_eventbrite; chain = ("configured_locations", "open_run", "fetch_pages", "collect_ids", "fetch_details", "parse_listings", "close_run"); assert all(left in ingest_eventbrite.task_dict[right].upstream_task_ids for left, right in zip(chain, chain[1:]))'
+  'import sys; sys.path.insert(0, "/opt/airflow/dags"); from ingest_eventbrite import ingest_eventbrite; chain = ("configured_markets", "open_run", "fetch_pages", "collect_ids", "fetch_details", "parse_listings", "close_run"); assert all(left in ingest_eventbrite.task_dict[right].upstream_task_ids for left, right in zip(chain, chain[1:]))'
 
 geocode_tasks=$(
   docker compose --env-file "$env_file" --file "$compose_file" exec --no-TTY \

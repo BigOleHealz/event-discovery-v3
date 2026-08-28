@@ -15,12 +15,14 @@ from ingestion.eventbrite import (
     ApiEventDetailFetcher,
     EventbriteConfig,
     EventbriteListingClient,
+    eventbrite_location_slug,
 )
 from ingestion.models import EventbriteEventReference, EventbriteSearchTarget
 from ingestion.pipeline import (
     crawl_eventbrite_location,
     fail_run_on_error,
     fetch_and_stage_eventbrite_details,
+    group_crawl_targets_by_market,
     parse_and_filter_staged,
 )
 
@@ -42,34 +44,73 @@ def _repository() -> IngestionRepository:
     tags=["ingestion", "eventbrite"],
 )
 def build_ingest_eventbrite():
-    """Build one independently mapped ingestion flow per configured location."""
+    """Build one independently mapped ingestion flow per configured market."""
 
     @task
-    def configured_locations() -> list[str]:
-        return list(EventbriteConfig.from_env().locations)
+    def configured_markets() -> list[dict[str, object]]:
+        groups = group_crawl_targets_by_market(
+            _repository().enabled_crawl_targets(source="eventbrite")
+        )
+        if not groups:
+            raise ValueError("No enabled Eventbrite crawl targets are configured")
+        return [
+            {
+                "source": group.source,
+                "market_id": str(group.market_id),
+                "market_slug": group.market_slug,
+                "market_name": group.market_name,
+                "targets": [
+                    {
+                        "id": str(target.id),
+                        "source_location": dict(target.source_location),
+                        "category": target.category,
+                        "window_days": target.window_days,
+                        "page_cap": target.page_cap,
+                    }
+                    for target in group.targets
+                ],
+            }
+            for group in groups
+        ]
 
     @task
-    def open_run(location: str) -> dict[str, object]:
+    def open_run(market_config: dict[str, object]) -> dict[str, object]:
         context = get_current_context()
         airflow_run_id = str(context["run_id"])
         config = EventbriteConfig.from_env()
         started_at = utc_now()
         window_start = started_at.date()
-        window_end = window_start + timedelta(days=config.window_days - 1)
-        source_url = f"{config.web_base_url}/d/{location}/"
+        raw_targets = cast(list[dict[str, object]], market_config["targets"])
+        if not raw_targets:
+            raise ValueError("A market crawl must contain at least one target")
+        window_end = window_start + timedelta(
+            days=max(int(target["window_days"]) for target in raw_targets) - 1
+        )
+        source_locations = [
+            eventbrite_location_slug(cast(dict[str, object], target["source_location"]))
+            for target in raw_targets
+        ]
+        source_url = (
+            f"{config.web_base_url}/d/{source_locations[0]}/"
+            if len(set(source_locations)) == 1
+            else config.web_base_url
+        )
+        market_id = uuid.UUID(str(market_config["market_id"]))
+        market_slug = str(market_config["market_slug"])
         run_id = _repository().open_run(
             dag_id=DAG_ID,
             airflow_run_id=airflow_run_id,
             source_url=source_url,
-            city=location,
-            categories=config.categories,
+            city=market_slug,
+            market_id=market_id,
+            categories=tuple(str(target["category"]) for target in raw_targets),
             window_start=window_start,
             window_end=window_end,
             started_at=started_at,
         )
         return {
+            **market_config,
             "run_id": str(run_id),
-            "location": location,
             "window_start": window_start.isoformat(),
             "window_end": window_end.isoformat(),
         }
@@ -79,17 +120,20 @@ def build_ingest_eventbrite():
         run_id = uuid.UUID(str(run_context["run_id"]))
         repository = _repository()
         config = EventbriteConfig.from_env()
-        location = str(run_context["location"])
         window_start = date.fromisoformat(str(run_context["window_start"]))
-        window_end = date.fromisoformat(str(run_context["window_end"]))
+        raw_targets = cast(list[dict[str, object]], run_context["targets"])
         targets = tuple(
             EventbriteSearchTarget(
-                location=location,
-                category=category,
+                crawl_target_id=uuid.UUID(str(target["id"])),
+                location_slug=eventbrite_location_slug(
+                    cast(dict[str, object], target["source_location"])
+                ),
+                category=str(target["category"]),
                 window_start=window_start,
-                window_end=window_end,
+                window_end=window_start + timedelta(days=int(target["window_days"]) - 1),
+                page_cap=int(target["page_cap"]),
             )
-            for category in config.categories
+            for target in raw_targets
         )
         with fail_run_on_error(repository=repository, run_id=run_id, clock=utc_now):
             with EventbriteListingClient(config) as client:
@@ -190,8 +234,8 @@ def build_ingest_eventbrite():
         else:
             repository.mark_success(**arguments)
 
-    locations = configured_locations()
-    run_contexts = open_run.expand(location=locations)
+    markets = configured_markets()
+    run_contexts = open_run.expand(market_config=markets)
     crawl_contexts = fetch_pages.expand(run_context=run_contexts)
     collected_contexts = collect_ids.expand(crawl_context=crawl_contexts)
     detail_contexts = fetch_details.expand(crawl_context=collected_contexts)

@@ -38,7 +38,24 @@ def clean_ingestion_tables(database_url: str) -> Iterator[None]:
         connection.execute(
             """
             TRUNCATE ingest.event_detail_cache, ingest.geocode_cache, source_listing,
-                ingest.rejected_listing, ingest.page_fetch, ingest.run, venue CASCADE
+                ingest.rejected_listing, ingest.page_fetch, ingest.run,
+                ingest.crawl_target, venue CASCADE;
+            INSERT INTO ingest.crawl_target (
+                id, source, market_id, source_location, category, enabled,
+                window_days, page_cap
+            ) VALUES
+                (
+                    '4c33ed98-a96b-4d72-946f-5bd923db9506', 'eventbrite',
+                    '8a7a04d3-7fb6-4cdb-a3d7-e5f08cf48bed',
+                    '{"kind":"eventbrite_slug","slug":"pa--philadelphia"}'::jsonb,
+                    'science-and-tech', true, 5, 20
+                ),
+                (
+                    'a8ddad4f-d5af-4f24-a8a6-99e10aa3d76f', 'eventbrite',
+                    '8a7a04d3-7fb6-4cdb-a3d7-e5f08cf48bed',
+                    '{"kind":"eventbrite_slug","slug":"pa--philadelphia"}'::jsonb,
+                    'food-and-drink', true, 5, 20
+                )
             """
         )
     yield
