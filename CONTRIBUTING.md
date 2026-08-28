@@ -80,8 +80,11 @@ checks. Before completing a phase, run the full suite.
 Python must have type hints throughout and pass `ruff` and `mypy`; never use a bare
 `except`. TypeScript must pass strict `tsc` and must not use `any`.
 
-Follow the twelve-factor rules in `PROJECT_PLAN.md` section 9. Read configuration from
-environment variables only. Do not hardcode hostnames, ports, credentials, or secrets.
+Follow the twelve-factor rules in `PROJECT_PLAN.md` section 9. Process configuration —
+service connections, credentials, API base URLs, and schedules — comes from environment
+variables only; never hardcode hostnames, ports, credentials, or secrets. Operational
+inventory such as enabled markets and crawl targets is application data in `ingest.market`
+and `ingest.crawl_target`, seeded and changed by migration, not environment variables.
 Keep `.env` untracked and keep `.env.example` current with non-secret variable names.
 
 ## End-of-phase checklist
