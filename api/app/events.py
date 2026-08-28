@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, HttpUrl, TypeAdapter
 from sqlalchemy import Connection, text
 
@@ -56,8 +57,40 @@ class EventFeatureCollection(BaseModel):
 REGISTRATION_LINKS_ADAPTER = TypeAdapter(list[RegistrationLink])
 
 
-EVENT_QUERY = text(
-    """
+@dataclass(frozen=True)
+class BoundingBox:
+    north: float
+    south: float
+    east: float
+    west: float
+
+
+def get_bounding_box(
+    north: Annotated[float | None, Query(ge=-90, le=90)] = None,
+    south: Annotated[float | None, Query(ge=-90, le=90)] = None,
+    east: Annotated[float | None, Query(ge=-180, le=180)] = None,
+    west: Annotated[float | None, Query(ge=-180, le=180)] = None,
+) -> BoundingBox | None:
+    """Validate an optional map viewport, preserving wrapped longitudes."""
+    values = (north, south, east, west)
+    if all(value is None for value in values):
+        return None
+    if any(value is None for value in values):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="north, south, east, and west must be supplied together",
+        )
+    if north is None or south is None or east is None or west is None:
+        raise AssertionError("complete bounds were checked above")
+    if north <= south:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="north must be greater than south",
+        )
+    return BoundingBox(north=north, south=south, east=east, west=west)
+
+
+EVENT_SELECT = """
     SELECT
         event.id,
         event.title,
@@ -90,8 +123,37 @@ EVENT_QUERY = text(
     LEFT JOIN venue ON venue.id = event.venue_id
     WHERE event.archived_at IS NULL
       AND event.starts_at >= :current_time
+      {bounds_clause}
     ORDER BY event.starts_at, event.id
-    """
+"""
+
+EVENT_QUERY = text(EVENT_SELECT.format(bounds_clause=""))
+
+BOUNDED_EVENT_QUERY = text(
+    EVENT_SELECT.format(
+        bounds_clause="""
+      AND (
+          (
+              :west <= :east
+              AND event.location && ST_MakeEnvelope(
+                  :west, :south, :east, :north, 4326
+              )::geography
+          )
+          OR
+          (
+              :west > :east
+              AND (
+                  event.location && ST_MakeEnvelope(
+                      :west, :south, 180, :north, 4326
+                  )::geography
+                  OR event.location && ST_MakeEnvelope(
+                      -180, :south, :east, :north, 4326
+                  )::geography
+              )
+          )
+      )
+        """
+    )
 )
 
 
@@ -99,8 +161,19 @@ EVENT_QUERY = text(
 def list_events(
     connection: Annotated[Connection, Depends(get_connection)],
     current_time: Annotated[datetime, Depends(utc_now)],
+    bounds: Annotated[BoundingBox | None, Depends(get_bounding_box)],
 ) -> EventFeatureCollection:
-    rows = connection.execute(EVENT_QUERY, {"current_time": current_time}).mappings()
+    parameters: dict[str, datetime | float] = {"current_time": current_time}
+    query = EVENT_QUERY
+    if bounds is not None:
+        query = BOUNDED_EVENT_QUERY
+        parameters.update(
+            north=bounds.north,
+            south=bounds.south,
+            east=bounds.east,
+            west=bounds.west,
+        )
+    rows = connection.execute(query, parameters).mappings()
     features = [
         EventFeature(
             id=str(row["id"]),

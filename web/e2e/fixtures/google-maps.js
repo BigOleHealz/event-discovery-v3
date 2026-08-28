@@ -7,7 +7,25 @@
     constructor(element, options) {
       this.element = element;
       this.options = options;
+      this.listeners = new Map();
       element.dataset.googleMapReady = "true";
+    }
+
+    addListener(eventName, handler) {
+      this.listeners.set(eventName, handler);
+      if (eventName === "idle") {
+        queueMicrotask(handler);
+      }
+      return {
+        remove: () => this.listeners.delete(eventName),
+      };
+    }
+
+    getBounds() {
+      return {
+        getNorthEast: () => ({ lat: () => 40.15, lng: () => -74.95 }),
+        getSouthWest: () => ({ lat: () => 39.8, lng: () => -75.3 }),
+      };
     }
   }
 

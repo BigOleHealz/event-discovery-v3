@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { EventFeatureCollection } from "./events";
@@ -8,10 +8,35 @@ const mapConstructor = vi.fn();
 const markerConstructor = vi.fn();
 const pinConstructor = vi.fn();
 const markerInstances: FakeMarker[] = [];
+const mapInstances: FakeMap[] = [];
+let viewport = { north: 40.1, south: 39.8, east: -74.9, west: -75.3 };
 
 class FakeMap {
+  private readonly listeners = new Map<string, () => void>();
+
   constructor(element: HTMLElement, options: google.maps.MapOptions) {
     mapConstructor(element, options);
+    mapInstances.push(this);
+  }
+
+  addListener(eventName: string, handler: () => void): google.maps.MapsEventListener {
+    this.listeners.set(eventName, handler);
+    return {
+      remove: () => this.listeners.delete(eventName),
+    };
+  }
+
+  getBounds(): google.maps.LatLngBounds {
+    return {
+      getNorthEast: () =>
+        ({ lat: () => viewport.north, lng: () => viewport.east }) as google.maps.LatLng,
+      getSouthWest: () =>
+        ({ lat: () => viewport.south, lng: () => viewport.west }) as google.maps.LatLng,
+    } as google.maps.LatLngBounds;
+  }
+
+  trigger(eventName: string): void {
+    this.listeners.get(eventName)?.();
   }
 }
 
@@ -97,19 +122,25 @@ const events: EventFeatureCollection = {
 };
 
 afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
   markerInstances.length = 0;
+  mapInstances.length = 0;
+  viewport = { north: 40.1, south: 39.8, east: -74.9, west: -75.3 };
 });
 
 function stubEventResponse(): void {
   vi.stubGlobal(
     "fetch",
-    vi.fn().mockResolvedValue(
-      new Response(JSON.stringify(events), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
+    vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(events), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
     ),
   );
 }
@@ -153,5 +184,38 @@ describe("EventMap", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Close details" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("debounces map idle events into one bounded viewport refetch", async () => {
+    stubEventResponse();
+    render(<EventMap apiBaseUrl="." apiKey="test-key" mapId="map-id" />);
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("2 events"));
+    expect(mapInstances).toHaveLength(1);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(String(vi.mocked(fetch).mock.calls[0]?.[0])).toBe("http://localhost:3000/api/events");
+
+    vi.useFakeTimers();
+    act(() => {
+      mapInstances[0]?.trigger("idle");
+      mapInstances[0]?.trigger("idle");
+      mapInstances[0]?.trigger("idle");
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(299));
+    expect(fetch).toHaveBeenCalledOnce();
+
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const secondRequest = vi.mocked(fetch).mock.calls[1]?.[0];
+    const requestUrl = new URL(String(secondRequest));
+    expect(Object.fromEntries(requestUrl.searchParams)).toEqual({
+      north: "40.1",
+      south: "39.8",
+      east: "-74.9",
+      west: "-75.3",
+    });
+    vi.useRealTimers();
+    await waitFor(() => expect(markerConstructor).toHaveBeenCalledTimes(4));
+    expect(markerInstances.slice(0, 2).every((marker) => marker.map === null)).toBe(true);
   });
 });

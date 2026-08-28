@@ -38,6 +38,13 @@ export interface EventFeatureCollection {
   features: EventFeature[];
 }
 
+export interface EventViewport {
+  north: number;
+  south: number;
+  east: number;
+  west: number;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -116,8 +123,20 @@ function isEventFeatureCollection(value: unknown): value is EventFeatureCollecti
   );
 }
 
-export async function fetchEvents(apiBaseUrl: string, signal: AbortSignal): Promise<EventFeature[]> {
-  const response = await fetch(`${apiBaseUrl}/api/events`, { signal });
+export async function fetchEvents(
+  apiBaseUrl: string,
+  signal: AbortSignal,
+  viewport?: EventViewport,
+): Promise<EventFeature[]> {
+  const endpoint = `${apiBaseUrl.replace(/\/$/, "")}/api/events`;
+  const url = new URL(endpoint, window.location.href);
+  if (viewport !== undefined) {
+    url.searchParams.set("north", String(viewport.north));
+    url.searchParams.set("south", String(viewport.south));
+    url.searchParams.set("east", String(viewport.east));
+    url.searchParams.set("west", String(viewport.west));
+  }
+  const response = await fetch(url, { signal });
   if (!response.ok) {
     throw new Error(`Event request failed with status ${response.status}`);
   }

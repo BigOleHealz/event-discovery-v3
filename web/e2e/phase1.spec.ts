@@ -13,26 +13,27 @@ test("renders pins, event detail, and an installable offline shell", async ({ pa
       body: mapsFixture,
     });
   });
-  await page.route("**/api/events", async (route) => {
-    const response = await route.fetch();
-    const payload = (await response.json()) as {
-      features: Array<{
-        properties: {
-          registration_links: Array<{ source: string; url: string }>;
-        };
-      }>;
-    };
-    const firstFeature = payload.features[0];
-    if (firstFeature === undefined) {
-      throw new Error("Event fixture response contains no features");
-    }
-    firstFeature.properties.registration_links = [
-      {
-        source: "eventbrite",
-        url: "https://www.eventbrite.com/e/parkway-jazz-night",
-      },
-    ];
-    await route.fulfill({ response, json: payload });
+  const apiResponse = await page.request.get("/api/events");
+  expect(apiResponse.ok()).toBe(true);
+  const payload = (await apiResponse.json()) as {
+    features: Array<{
+      properties: {
+        registration_links: Array<{ source: string; url: string }>;
+      };
+    }>;
+  };
+  const firstFeature = payload.features[0];
+  if (firstFeature === undefined) {
+    throw new Error("Event fixture response contains no features");
+  }
+  firstFeature.properties.registration_links = [
+    {
+      source: "eventbrite",
+      url: "https://www.eventbrite.com/e/parkway-jazz-night",
+    },
+  ];
+  await page.route("**/api/events**", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", json: payload });
   });
 
   await page.goto("/");

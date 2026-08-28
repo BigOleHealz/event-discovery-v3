@@ -1,6 +1,7 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+addopts = "-q --no-header --tb=short -p no:cacheprovider
 
 [tool.ruff]
 line-length = 100

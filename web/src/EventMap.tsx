@@ -2,10 +2,11 @@ import { importLibrary, setOptions } from "@googlemaps/js-api-loader";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { EventDetailPanel } from "./EventDetailPanel";
-import type { EventFeature } from "./events";
+import type { EventFeature, EventViewport } from "./events";
 import { fetchEvents } from "./events";
 
 const PHILADELPHIA_CENTER: google.maps.LatLngLiteral = { lat: 39.9526, lng: -75.1652 };
+const VIEWPORT_FETCH_DEBOUNCE_MS = 300;
 
 let configuredApiKey: string | null = null;
 
@@ -34,15 +35,28 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
   const closeDetails = useCallback(() => setSelectedEvent(null), []);
 
   useEffect(() => {
-    const controller = new AbortController();
-    const markers: google.maps.marker.AdvancedMarkerElement[] = [];
-    const markerListeners: google.maps.MapsEventListener[] = [];
+    let requestController = new AbortController();
+    let markers: google.maps.marker.AdvancedMarkerElement[] = [];
+    let markerListeners: google.maps.MapsEventListener[] = [];
+    let idleListener: google.maps.MapsEventListener | null = null;
+    let viewportTimer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
+
+    function clearMarkers(): void {
+      for (const listener of markerListeners) {
+        listener.remove();
+      }
+      for (const marker of markers) {
+        marker.map = null;
+      }
+      markerListeners = [];
+      markers = [];
+    }
 
     async function initializeMap(): Promise<void> {
       configureLoader(apiKey);
       const [events, mapsLibrary, markerLibrary] = await Promise.all([
-        fetchEvents(apiBaseUrl, controller.signal),
+        fetchEvents(apiBaseUrl, requestController.signal),
         importLibrary("maps") as Promise<google.maps.MapsLibrary>,
         importLibrary("marker") as Promise<google.maps.MarkerLibrary>,
       ]);
@@ -60,27 +74,75 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
         fullscreenControl: true,
       });
 
-      for (const event of events) {
-        const [longitude, latitude] = event.geometry.coordinates;
-        const marker = new markerLibrary.AdvancedMarkerElement({
-          map,
-          position: { lat: latitude, lng: longitude },
-          title: event.properties.title,
-        });
-        marker.dataset.eventMarker = event.id;
-        marker.append(
-          new markerLibrary.PinElement({
-            background: "#d45d3f",
-            borderColor: "#723524",
-            glyphColor: "#fffaf0",
-            scale: 0.92,
-          }),
-        );
-        markerListeners.push(marker.addListener("click", () => setSelectedEvent(event)));
-        markers.push(marker);
+      function renderEvents(nextEvents: EventFeature[]): void {
+        clearMarkers();
+        for (const event of nextEvents) {
+          const [longitude, latitude] = event.geometry.coordinates;
+          const marker = new markerLibrary.AdvancedMarkerElement({
+            map,
+            position: { lat: latitude, lng: longitude },
+            title: event.properties.title,
+          });
+          marker.dataset.eventMarker = event.id;
+          marker.append(
+            new markerLibrary.PinElement({
+              background: "#d45d3f",
+              borderColor: "#723524",
+              glyphColor: "#fffaf0",
+              scale: 0.92,
+            }),
+          );
+          markerListeners.push(marker.addListener("click", () => setSelectedEvent(event)));
+          markers.push(marker);
+        }
+        setEventCount(nextEvents.length);
       }
 
-      setEventCount(events.length);
+      async function refetchViewport(): Promise<void> {
+        const bounds = map.getBounds();
+        if (bounds === undefined) {
+          return;
+        }
+        const northEast = bounds.getNorthEast();
+        const southWest = bounds.getSouthWest();
+        const viewport: EventViewport = {
+          north: northEast.lat(),
+          south: southWest.lat(),
+          east: northEast.lng(),
+          west: southWest.lng(),
+        };
+        requestController.abort();
+        requestController = new AbortController();
+        try {
+          const nextEvents = await fetchEvents(
+            apiBaseUrl,
+            requestController.signal,
+            viewport,
+          );
+          if (!cancelled) {
+            renderEvents(nextEvents);
+            setError(null);
+          }
+        } catch (reason: unknown) {
+          if (
+            !cancelled &&
+            !(reason instanceof DOMException && reason.name === "AbortError")
+          ) {
+            setError(reason instanceof Error ? reason.message : "Unable to refresh the map");
+          }
+        }
+      }
+
+      renderEvents(events);
+      idleListener = map.addListener("idle", () => {
+        if (viewportTimer !== null) {
+          clearTimeout(viewportTimer);
+        }
+        viewportTimer = setTimeout(() => {
+          viewportTimer = null;
+          void refetchViewport();
+        }, VIEWPORT_FETCH_DEBOUNCE_MS);
+      });
     }
 
     void initializeMap().catch((reason: unknown) => {
@@ -91,13 +153,12 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
 
     return () => {
       cancelled = true;
-      controller.abort();
-      for (const listener of markerListeners) {
-        listener.remove();
+      requestController.abort();
+      idleListener?.remove();
+      if (viewportTimer !== null) {
+        clearTimeout(viewportTimer);
       }
-      for (const marker of markers) {
-        marker.map = null;
-      }
+      clearMarkers();
     };
   }, [apiBaseUrl, apiKey, mapId]);
 
