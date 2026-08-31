@@ -26,6 +26,10 @@ x-airflow-common: &airflow-common
     MEETUP_DAG_SCHEDULE: ${MEETUP_DAG_SCHEDULE:-0 3 * * *}
     MEETUP_PAGE_SIZE: ${MEETUP_PAGE_SIZE:-20}
     MEETUP_REQUEST_TIMEOUT_SECONDS: ${MEETUP_REQUEST_TIMEOUT_SECONDS:-30}
+    QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+    QDRANT_REQUEST_TIMEOUT_SECONDS: ${QDRANT_REQUEST_TIMEOUT_SECONDS:-10}
+    QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+    QDRANT_VECTOR_SIZE: ${QDRANT_VECTOR_SIZE:-1536}
     GOOGLE_GEOCODING_API_BASE_URL: ${GOOGLE_GEOCODING_API_BASE_URL}
     GOOGLE_GEOCODING_API_KEY: ${GOOGLE_GEOCODING_API_KEY}
     GOOGLE_GEOCODING_DAG_SCHEDULE: ${GOOGLE_GEOCODING_DAG_SCHEDULE}
@@ -37,6 +41,38 @@ x-airflow-common: &airflow-common
   restart: unless-stopped
 
 services:
+  qdrant:
+    image: qdrant/qdrant:v${QDRANT_VERSION:-1.19.0}
+    ports:
+      - "${QDRANT_BIND_ADDRESS:-127.0.0.1}:${QDRANT_EXTERNAL_PORT:-6333}:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333'"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
+
+  qdrant-init:
+    build:
+      context: ./airflow
+      args:
+        AIRFLOW_VERSION: ${AIRFLOW_VERSION}
+    environment:
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      QDRANT_INIT_ATTEMPTS: ${QDRANT_INIT_ATTEMPTS:-30}
+      QDRANT_INIT_RETRY_SECONDS: ${QDRANT_INIT_RETRY_SECONDS:-1}
+      QDRANT_REQUEST_TIMEOUT_SECONDS: ${QDRANT_REQUEST_TIMEOUT_SECONDS:-10}
+      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      QDRANT_VECTOR_SIZE: ${QDRANT_VECTOR_SIZE:-1536}
+    command: python -m ingestion.qdrant
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    restart: "no"
+
   postgres:
     image: postgis/postgis:16-3.4
     environment:
@@ -215,3 +251,4 @@ services:
 volumes:
   airflow_logs: {}
   pgdata: {}
+  qdrant_data: {}
