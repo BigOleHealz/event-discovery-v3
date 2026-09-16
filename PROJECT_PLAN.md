@@ -844,15 +844,18 @@ Installable from the browser on desktop and mobile — no app store, one codebas
   `start_url` at the map
 - **Service worker** — precache the app shell (JS, CSS, icons, map container) so a cold
   launch renders instantly; the same worker handles Web Push in Phase 7e
-- **Offline behaviour** — cache the last successful `/api/events` response per viewport and
-  serve it stale with an "offline, showing last known events" banner. Event detail for cached
-  events works offline; search and invites require the network and say so.
+- **Offline behaviour** — **deferred, not built.** Phase 3 merged without 3g, so today the
+  shell loads offline but shows no events and no banner. The intended behaviour: cache the
+  last successful `/api/events` response per viewport and serve it stale with an "offline,
+  showing last known events" banner; event detail for cached events works offline, while
+  search and invites require the network and say so. Scheduled for its own branch after
+  phase 4 merges (§11)
 - **Install prompt** — listen for `beforeinstallprompt`, show a dismissible "add to home
   screen" affordance after the second visit, never on first load
 - **iOS caveats** — Safari only allows Web Push for installed PWAs, so the push opt-in in
   Phase 7e must detect `display-mode: standalone` and prompt the user to install first
-- **Runtime caching** — network-first for event data, cache-first for tiles and static
-  assets, with a versioned cache name so deploys invalidate cleanly
+- **Runtime caching** — network-first for event data (deferred with 3g), cache-first for
+  tiles and static assets, with a versioned cache name so deploys invalidate cleanly
 
 ---
 
@@ -930,8 +933,10 @@ containers, not mocks — wherever the dependency is cheap to run.
   the insert fails — that constraint is the anti-spam guarantee, so it needs a test proving it.
 - **Idempotency.** Every DAG task runs twice in a test and asserts the second run produces no
   duplicate rows. Ingestion is inherently re-run.
-- **Service worker.** Playwright asserts the manifest is served, the worker registers, the
-  shell loads with the network offline, and the stale-data banner appears.
+- **Service worker.** Playwright asserts the manifest is served, the worker registers, and the
+  shell loads with the network offline. The stale-data banner assertion is **deferred with 3g**
+  — it cannot be written before the banner exists, and carrying it here as though it were
+  satisfied is part of how 3g merged unnoticed (§11).
 
 ### CI
 
@@ -1059,9 +1064,15 @@ installs to a phone home screen.
 - **3e** — Sidebar: date range, time-of-day, category multi-select — all as URL query params
 - **3f** — Category colour palette on pins, plus a legend in the sidebar; neutral cells
   below zoom 13
-- **3g** — Offline caching of the last successful viewport response, with a stale-data banner
+- **3g** — **Deferred, not implemented.** Offline caching of the last successful viewport
+  response, with a stale-data banner. Phase 3 was merged without it; its own branch, cut after
+  phase 4 merges. §7's offline bullet and §8's service-worker rule are marked to match
 
 *Done when:* zooming out over the northeast returns counts, not thirty thousand pins.
+
+Note on that condition: it was satisfied by 3c alone, which is how 3g merged unbuilt. The
+end-of-phase check in `CONTRIBUTING.md` now verifies every sub-phase listed here, not only the
+*Done when* line.
 
 ### Phase 4 — Multi-source and deduplication
 
