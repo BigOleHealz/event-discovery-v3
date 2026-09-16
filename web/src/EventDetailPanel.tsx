@@ -118,16 +118,18 @@ export function EventDetailPanel({ event, onClose }: EventDetailPanelProps) {
         )}
       </div>
 
-      <footer className="detail-actions">
+      <footer className="detail-actions" aria-label="Registration options">
         {properties.registration_links.length === 0 ? (
           <p className="detail-muted">Registration information is not available.</p>
         ) : (
-          properties.registration_links.map((registration) => (
-            <RegistrationButton
-              key={`${registration.source}:${registration.url}`}
-              registration={registration}
-            />
-          ))
+          <>
+            {properties.registration_links.length > 1 ? (
+              <p className="detail-muted">Choose where to register for this event.</p>
+            ) : null}
+            {properties.registration_links.map((registration) => (
+              <RegistrationButton key={registration.source} registration={registration} />
+            ))}
+          </>
         )}
       </footer>
     </aside>

@@ -247,7 +247,9 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
         onChange={changeFilters}
       />
       <div className="map-status" role="status">
-        {error ?? (eventCount === null ? "Loading Philadelphia events…" : `${eventCount} events`)}
+        {error ?? (eventCount === null
+          ? "Loading Philadelphia events…"
+          : `${eventCount} ${eventCount === 1 ? "event" : "events"}`)}
       </div>
       <EventDetailPanel event={selectedEvent} onClose={closeDetails} />
     </section>

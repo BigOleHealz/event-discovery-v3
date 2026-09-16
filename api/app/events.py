@@ -252,10 +252,18 @@ EVENT_SELECT = """
                         'source', listing.source,
                         'url', COALESCE(listing.registration_url, listing.url)
                     )
-                    ORDER BY listing.source, listing.id
+                    ORDER BY listing.source
                 )
-                FROM source_listing AS listing
-                WHERE listing.canonical_event_id = event.id
+                FROM (
+                    -- Multiple listings from one provider can resolve to this
+                    -- occurrence. Offer one registration destination per source,
+                    -- preferring an explicit registration URL, then fresh data.
+                    SELECT DISTINCT ON (source) source, registration_url, url
+                    FROM source_listing
+                    WHERE canonical_event_id = event.id
+                    ORDER BY source, (registration_url IS NOT NULL) DESC,
+                             last_seen_at DESC NULLS LAST, id
+                ) AS listing
             ),
             '[]'::jsonb
         ) AS registration_links
