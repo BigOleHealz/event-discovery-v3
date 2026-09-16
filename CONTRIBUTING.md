@@ -93,7 +93,10 @@ Before asking for a phase to be merged:
 
 1. Run the full test, lint, and type-check suite.
 2. Run `docker compose up` and verify the phase's exact **Done when** condition from the
-   roadmap.
+   roadmap. Then check off every sub-phase the roadmap lists for that phase, individually. The
+   **Done when** condition is not a proxy for completeness — phase 3's was satisfied by 3c
+   alone, and 3g was merged past without being built because nothing asked for it by name. A
+   sub-phase that is being deliberately deferred is reported as deferred, not left silent.
 3. Wait for the maintainer's separate authorization before creating commits, then push the
    phase branch only when requested.
 4. Report what was built.
