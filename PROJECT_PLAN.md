@@ -448,7 +448,7 @@ the comparison that would reverse it.
 CREATE EXTENSION IF NOT EXISTS vector;
 
 ALTER TABLE source_listing
-    ADD COLUMN embedding vector(1536);
+    ADD COLUMN embedding vector(1536);   -- text-embedding-3-small (§13)
 
 -- One index over every listing. No per-city or per-date partial indexes — metro
 -- boundaries (Minneapolis/Saint Paul) and midnight-spanning events break that
@@ -1162,7 +1162,11 @@ The point of the project — a known domain to try unfamiliar tools in. Candidat
 - **Ingestion**: swap Airflow for Dagster or Prefect and compare
 - **Streaming**: Kafka between scrape and dedup instead of direct DB writes
 - **Search**: Typesense or Meilisearch for text search alongside geo
-- **Embeddings**: compare local models vs. hosted; try reranking on the dedup middle band
+- **Embeddings**: compare local models vs. hosted; try reranking on the dedup middle band.
+  Note the cost of switching under pgvector: the dimension is part of the column type, so a
+  different model family means a migration plus a full re-embed of every listing, not a
+  collection rebuild. A local 384-dimension model is a schema change, not a config change —
+  worth planning as one sub-phase rather than an afternoon
 - **API**: GraphQL layer over the REST core
 - **Frontend**: swap Google Maps for MapLibre + self-hosted tiles (also unlocks true offline
   maps, since tiles could be cached by the service worker)
@@ -1229,6 +1233,13 @@ Settled, recorded so they don't get relitigated:
   handling a single occurrence that gets moved or cancelled independently of its siblings. The
   group id gives the UI "every Tuesday" without introducing a second shape into the dedup path.
   (§3.1, §4)
+- **Embeddings are OpenAI `text-embedding-3-small`**, 1536 dimensions, over `title` plus the
+  first 500 characters of `description`. Hosted rather than local for now: it removes model
+  serving from the ingestion image, and dedup volume makes the per-token cost negligible. Under
+  pgvector the dimension is part of the column type — `vector(1536)` — so the schema owns it
+  and changing model families is a migration plus a re-embed, not a collection rebuild. The
+  provider, model name, and key are environment config; the dimension is deliberately not,
+  because two places holding it is two places to disagree. (§3.4, §12)
 
 ## 14. Open Questions
 
