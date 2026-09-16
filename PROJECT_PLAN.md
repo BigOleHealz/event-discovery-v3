@@ -96,6 +96,7 @@ CREATE TABLE canonical_event (
     venue_id        UUID REFERENCES venue(id),
     location        GEOGRAPHY(POINT, 4326) NOT NULL,
     primary_category TEXT,
+    recurrence_group_id UUID,      -- null unless this occurrence belongs to a series (§13)
     created_at      TIMESTAMPTZ DEFAULT now(),
     updated_at      TIMESTAMPTZ DEFAULT now(),
     archived_at     TIMESTAMPTZ            -- set 30 days after end; hidden from map, still queryable
@@ -513,6 +514,10 @@ Ordering by the distance operator is what allows the HNSW index to serve the que
 hard filters usually cut the candidate set to single digits first, and on a set that small a
 direct scan is the better plan. The index matters as the corpus grows; the thresholds hold
 either way.
+
+The ±90 minute window is meaningful because every row it compares has one concrete
+`starts_at`: recurring events are stored as one canonical event per occurrence (§13), never
+as a rule that would have to be expanded at comparison time.
 
 Exact-match shortcut: if two listings share a `google_place_id` **and** a start time to the
 minute **and** a normalized title, skip the vector step entirely.
@@ -1216,16 +1221,22 @@ Settled, recorded so they don't get relitigated:
   it adds is a built `postgres` image, since no official image carries PostGIS and pgvector
   together (§9). Qdrant stays in §12 as an explicit try-later, to be benchmarked against this
   baseline rather than assumed better. (§2, §3.4, §4, §9, §10, §11 4b)
+- **Recurring events are one canonical event per occurrence**, linked by a nullable
+  `recurrence_group_id` on `canonical_event`. A recurrence rule has no single `starts_at` to
+  compare against, and dedup needs a concrete time on both sides — a weekly series held as one
+  row could never match a source listing for one date, so the ±90 minute window would have
+  nothing to work with. Users also attend a date, not a series. The costs are row count and
+  handling a single occurrence that gets moved or cancelled independently of its siblings. The
+  group id gives the UI "every Tuesday" without introducing a second shape into the dedup path.
+  (§3.1, §4)
 
 ## 14. Open Questions
 
-1. Recurring events — one canonical event with a recurrence rule, or one per occurrence?
-   (Affects the dedup time-window logic significantly.)
-2. Rate limits and ToS review for each scraped source before adding it.
-3. Shadow account merge edge case: same person with both a shadow account (phone) and a real
+1. Rate limits and ToS review for each scraped source before adding it.
+2. Shadow account merge edge case: same person with both a shadow account (phone) and a real
    account (email), no overlapping identifier. Detectable at all, or accept the duplicate?
-4. Push relevance floor needs RSVP history to work, but new users have none — is a cold-start
+3. Push relevance floor needs RSVP history to work, but new users have none — is a cold-start
    signal worth it (declared category interests at signup), or do new users simply get no
    push until they RSVP once?
-5. Does the friends-are-going layer need privacy controls in v1, or is "friends only" scoping
+4. Does the friends-are-going layer need privacy controls in v1, or is "friends only" scoping
    sufficient?
