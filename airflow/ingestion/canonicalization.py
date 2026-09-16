@@ -214,13 +214,15 @@ class CanonicalEventRepository:
                 UPDATE source_listing
                 SET canonical_event_id = %(event_id)s,
                     url = %(url)s,
-                    registration_url = %(registration_url)s
+                    registration_url = %(registration_url)s,
+                    dedup_state = CASE WHEN %(exact_match)s THEN 'exact' ELSE dedup_state END
                 WHERE id = %(listing_id)s
                 """,
                 {
                     "event_id": event_id,
                     "url": candidate.listing.url,
                     "registration_url": candidate.listing.url,
+                    "exact_match": matched_event_id is not None,
                     "listing_id": candidate.listing_id,
                 },
             )

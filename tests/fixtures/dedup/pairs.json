@@ -1,0 +1,226 @@
+[
+  {
+    "id": "cross_source_show",
+    "expected": "same",
+    "a": {
+      "source": "eventbrite",
+      "title": "The Lanterns \u2014 Live",
+      "description": "Hand-labelled occurrence at World Cafe Live.",
+      "starts_at": "2026-10-06T23:30:00Z",
+      "longitude": -75.185,
+      "latitude": 39.9522,
+      "embedding_prefix": [
+        1,
+        0
+      ]
+    },
+    "b": {
+      "source": "meetup",
+      "title": "An evening with The Lanterns",
+      "description": "Second source listing for the labelled comparison.",
+      "minutes_after": 20,
+      "longitude": -75.185,
+      "latitude": 39.9522,
+      "embedding_prefix": [
+        0.96,
+        0.28
+      ]
+    }
+  },
+  {
+    "id": "ambiguous_open_mic",
+    "expected": "review",
+    "a": {
+      "source": "eventbrite",
+      "title": "Open mic showcase",
+      "description": "Hand-labelled occurrence at World Cafe Live.",
+      "starts_at": "2026-10-06T23:30:00Z",
+      "longitude": -75.185,
+      "latitude": 39.9522,
+      "embedding_prefix": [
+        1,
+        0
+      ]
+    },
+    "b": {
+      "source": "meetup",
+      "title": "Acoustic showcase and open mic",
+      "description": "Second source listing for the labelled comparison.",
+      "minutes_after": 30,
+      "longitude": -75.185,
+      "latitude": 39.9522,
+      "embedding_prefix": [
+        0.8,
+        0.6
+      ]
+    }
+  },
+  {
+    "id": "unrelated_same_venue",
+    "expected": "distinct",
+    "a": {
+      "source": "eventbrite",
+      "title": "Python workshop",
+      "description": "Hand-labelled occurrence at World Cafe Live.",
+      "starts_at": "2026-10-06T23:30:00Z",
+      "longitude": -75.185,
+      "latitude": 39.9522,
+      "embedding_prefix": [
+        1,
+        0
+      ]
+    },
+    "b": {
+      "source": "meetup",
+      "title": "Wine tasting",
+      "description": "Second source listing for the labelled comparison.",
+      "minutes_after": 10,
+      "longitude": -75.185,
+      "latitude": 39.9522,
+      "embedding_prefix": [
+        0,
+        1
+      ]
+    }
+  },
+  {
+    "id": "different_tuesday",
+    "expected": "distinct",
+    "a": {
+      "source": "eventbrite",
+      "title": "Tuesday open mic",
+      "description": "Hand-labelled occurrence at World Cafe Live.",
+      "starts_at": "2026-10-06T23:30:00Z",
+      "longitude": -75.185,
+      "latitude": 39.9522,
+      "embedding_prefix": [
+        1,
+        0
+      ]
+    },
+    "b": {
+      "source": "meetup",
+      "title": "Tuesday open mic",
+      "description": "Second source listing for the labelled comparison.",
+      "minutes_after": 10080,
+      "longitude": -75.185,
+      "latitude": 39.9522,
+      "embedding_prefix": [
+        1,
+        0
+      ]
+    }
+  },
+  {
+    "id": "different_cities",
+    "expected": "distinct",
+    "a": {
+      "source": "eventbrite",
+      "title": "Startup social",
+      "description": "Hand-labelled occurrence at World Cafe Live.",
+      "starts_at": "2026-10-06T23:30:00Z",
+      "longitude": -75.185,
+      "latitude": 39.9522,
+      "embedding_prefix": [
+        1,
+        0
+      ]
+    },
+    "b": {
+      "source": "meetup",
+      "title": "Startup social",
+      "description": "Second source listing for the labelled comparison.",
+      "minutes_after": 0,
+      "longitude": -73.985,
+      "latitude": 39.9522,
+      "embedding_prefix": [
+        1,
+        0
+      ]
+    }
+  },
+  {
+    "id": "late_outside_window",
+    "expected": "distinct",
+    "a": {
+      "source": "eventbrite",
+      "title": "The Lanterns Live",
+      "description": "Hand-labelled occurrence at World Cafe Live.",
+      "starts_at": "2026-10-06T23:30:00Z",
+      "longitude": -75.185,
+      "latitude": 39.9522,
+      "embedding_prefix": [
+        1,
+        0
+      ]
+    },
+    "b": {
+      "source": "meetup",
+      "title": "The Lanterns Live",
+      "description": "Second source listing for the labelled comparison.",
+      "minutes_after": 91,
+      "longitude": -75.185,
+      "latitude": 39.9522,
+      "embedding_prefix": [
+        1,
+        0
+      ]
+    }
+  },
+  {
+    "id": "inclusive_time_window",
+    "expected": "same",
+    "a": {
+      "source": "eventbrite",
+      "title": "The Lanterns Live",
+      "description": "Hand-labelled occurrence at World Cafe Live.",
+      "starts_at": "2026-10-06T23:30:00Z",
+      "longitude": -75.185,
+      "latitude": 39.9522,
+      "embedding_prefix": [
+        1,
+        0
+      ]
+    },
+    "b": {
+      "source": "meetup",
+      "title": "The Lanterns encore",
+      "description": "Second source listing for the labelled comparison.",
+      "minutes_after": 90,
+      "longitude": -75.185,
+      "latitude": 39.9522,
+      "embedding_prefix": [
+        0.96,
+        0.28
+      ]
+    }
+  },
+  {
+    "id": "midnight_crossing",
+    "expected": "same",
+    "a": {
+      "source": "eventbrite",
+      "title": "Midnight jazz",
+      "description": "Hand-labelled occurrence at World Cafe Live.",
+      "starts_at": "2026-10-06T23:30:00Z",
+      "longitude": -75.185,
+      "latitude": 39.9522,
+      "embedding_prefix": [
+        1,
+        0
+      ]
+    },
+    "b": {
+      "source": "meetup",
+      "title": "Late night jazz",
+      "description": "Second source listing for the labelled comparison.",
+      "minutes_after": 60,
+      "longitude": -75.185,
+      "latitude": 39.9522,
+      "embedding_prefix": [
+        0.96,
+        0.28
+      ]
+    }
+  }
+]

@@ -139,6 +139,7 @@ def embed_pending(database_url: str, client: EmbeddingClient) -> int:
                 JOIN ingest.run AS run ON run.id = sl.ingestion_run_id
                 JOIN ingest.market AS market ON market.id = run.market_id
                 WHERE sl.embedding IS NULL AND sl.source IN ('eventbrite', 'meetup')
+                  AND sl.dedup_state <> 'exact'
                 ORDER BY sl.id
                 LIMIT %s
                 FOR UPDATE OF sl SKIP LOCKED
