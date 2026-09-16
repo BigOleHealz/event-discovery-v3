@@ -35,14 +35,15 @@ user-generated events, production-grade scaling.
                     ┌───────────▼──────────────┐
                     │  API (FastAPI)           │
                     │  auth, search, invites   │
-                    └──┬────────┬────────┬─────┘
-                       │        │        │
-        ┌──────────────▼──┐ ┌───▼─────┐ ┌▼──────────────┐
-        │ Postgres+PostGIS│ │ Neo4j   │ │ Qdrant        │
-        │ canonical data  │ │ graph   │ │ dedup vectors │
-        └──────────▲──────┘ └───▲─────┘ └▲──────────────┘
-                   │            │        │
-                ┌──┴────────────┴────────┴──┐
+                    └─────┬──────────────┬─────┘
+                          │              │
+        ┌─────────────────▼───────┐ ┌────▼────┐
+        │ Postgres + PostGIS      │ │ Neo4j   │
+        │ + pgvector              │ │ graph   │
+        │ canonical data, vectors │ │         │
+        └──────────▲──────────────┘ └────▲────┘
+                   │                     │
+                ┌──┴─────────────────────┴──┐
                 │  Airflow (ingestion DAGs)  │
                 │  scrapers + Stagehand      │
                 └──────────┬─────────────────┘
@@ -60,9 +61,8 @@ user-generated events, production-grade scaling.
 | `web` | React frontend (PWA: manifest + service worker), Google Maps JS API |
 | `api` | FastAPI — search, filters, auth, invites |
 | `airflow` | Scheduler + workers for ingestion DAGs |
-| `postgres` | Canonical event/user/invite data (PostGIS enabled) |
+| `postgres` | Canonical event/user/invite data plus dedup embeddings (PostGIS and pgvector enabled) |
 | `neo4j` | Event ↔ category ↔ venue ↔ source relationships |
-| `qdrant` | Embeddings for cross-source dedup |
 | `stagehand` | Browser automation worker for JS-rendered sites |
 
 ---
@@ -437,50 +437,82 @@ Postgres is the system of record; Neo4j is a projection, rebuilt from Postgres i
 It powers category hierarchies ("show me all music, including subgenres"), venue history,
 the friends-are-going map layer, and later on recommendations.
 
-### 3.4 Qdrant (dedup)
+### 3.4 pgvector (dedup)
 
-Single collection `event_listings`. **No per-city or per-date collections** — metro
-boundaries (Minneapolis/Saint Paul) and midnight-spanning events break that partitioning,
-and it produces thousands of tiny collections.
+The dedup embedding is a column on `source_listing`, in the same database as the columns
+§4's hard filters read. There is no separate vector service — see §13 for why, and §12 for
+the comparison that would reverse it.
 
-```python
-PointStruct(
-    id=listing_uuid,
-    vector=embed(f"{title}\n{description[:500]}"),
-    payload={
-        "starts_at_epoch": 1735689600,
-        "lat": 39.9526, "lon": -75.1652,
-        "location": {"lat": 39.9526, "lon": -75.1652},  # geo payload index
-        "source": "eventbrite",
-        "venue_name": "World Cafe Live",
-        "city": "Philadelphia",   # metadata label only, never a partition key
-    },
-)
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+
+ALTER TABLE source_listing
+    ADD COLUMN embedding vector(1536);
+
+-- One index over every listing. No per-city or per-date partial indexes — metro
+-- boundaries (Minneapolis/Saint Paul) and midnight-spanning events break that
+-- partitioning, and it produces hundreds of tiny indexes instead of one usable one.
+CREATE INDEX ON source_listing
+    USING hnsw (embedding vector_cosine_ops);
 ```
+
+The operator class must match the distance operator §4 uses: `vector_cosine_ops` indexes
+`<=>`. Pairing it with `vector_l2_ops` or with `<->` silently produces a sequential scan
+rather than an error.
+
+The embedded text is unchanged from the original design — `title` plus the first 500
+characters of `description`. What the old Qdrant point duplicated into its payload is not
+duplicated here: `starts_at` and coordinates are read from the joined `canonical_event` row,
+which already carries a GIST index on `location` and a btree on `starts_at` (§3.1). `city`
+stays a label on the row and is never a partition key.
+
+The column is nullable because a listing is staged and geocoded before it is embedded; the
+4b pipeline fills it, and §4's query skips rows where it is still null.
 
 ---
 
 ## 4. Deduplication Strategy
 
 Vector similarity alone will happily match two different open-mic nights at the same bar
-on different Tuesdays. So: **hard filters first, similarity second.**
+on different Tuesdays. So: **hard filters first, similarity second.** Both happen in one
+statement, because both operands live in the same database:
 
+```sql
+SELECT existing.id,
+       existing.canonical_event_id,
+       1 - (existing.embedding <=> :embedding) AS similarity
+FROM source_listing AS existing
+JOIN canonical_event AS event ON event.id = existing.canonical_event_id
+WHERE existing.embedding IS NOT NULL
+  AND event.starts_at BETWEEN :starts_at - INTERVAL '90 minutes'
+                          AND :starts_at + INTERVAL '90 minutes'
+  AND ST_DWithin(event.location, :location, 500)
+ORDER BY existing.embedding <=> :embedding
+LIMIT 10;
 ```
-Step 1 — Hard filter (Qdrant payload filter)
-   • starts_at within ± 90 minutes of candidate
-   • geo_radius: 500m of candidate coordinates
 
-Step 2 — Vector similarity on the survivors
-   • cosine similarity on title + description embedding
-   • score >= 0.88  -> same event
-   • 0.75 – 0.88    -> queue for manual review
-   • < 0.75         -> distinct event
+**`<=>` is cosine distance, and distance runs opposite to similarity.** Zero means identical,
+one means unrelated. The thresholds below are similarities, so they apply to `1 - distance`,
+converted once in the select list above rather than in each caller. Comparing a raw distance
+against 0.88 inverts the test — it would merge the least similar pairs and separate the
+identical ones, and it would do so without erroring.
 
-Step 3 — Resolution
-   • match found    -> attach source_listing to existing canonical_event
-   • no match       -> create new canonical_event, attach listing
-   • either way     -> upsert point into Qdrant, write SIMILAR_TO edge in Neo4j
-```
+Thresholds are unchanged:
+
+- similarity ≥ 0.88 → same event
+- 0.75 – 0.88 → queue for manual review
+- < 0.75 → distinct event
+
+Resolution, on the best row returned:
+
+- match found → attach `source_listing` to the existing `canonical_event`
+- no match → create a new `canonical_event`, attach the listing
+- either way → store the new listing's embedding, write a `SIMILAR_TO` edge in Neo4j
+
+Ordering by the distance operator is what allows the HNSW index to serve the query, but the
+hard filters usually cut the candidate set to single digits first, and on a set that small a
+direct scan is the better plan. The index matters as the corpus grows; the thresholds hold
+either way.
 
 Exact-match shortcut: if two listings share a `google_place_id` **and** a start time to the
 minute **and** a normalized title, skip the vector step entirely.
@@ -900,8 +932,11 @@ containers, not mocks — wherever the dependency is cheap to run.
 
 GitHub Actions on every push: lint (`ruff`, `eslint`), type check (`mypy`, `tsc`), then the
 suite. Dependencies come from `testcontainers` inside the test run rather than workflow
-service containers, so the same suite runs identically on a laptop and in CI — Postgres
-today, Qdrant when dedup lands. E2E runs on PRs only, since it's the slow one. Coverage
+service containers, so the same suite runs identically on a laptop and in CI. Dedup adds no
+new service now that vectors live in Postgres, but it does mean `testcontainers` must start
+the same PostGIS-plus-pgvector image Compose uses (§9) — the stock `postgis/postgis` image has
+no `vector` extension, so a suite pointed at it would fail on the migration rather than on a
+test. E2E runs on PRs only, since it's the slow one. Coverage
 reported but not gated on a number — a threshold just invites tests written to satisfy it.
 
 ---
@@ -916,12 +951,18 @@ services:
   api:        { build: ./api,      ports: ["8000:8000"] }
   airflow:    { build: ./airflow }
   stagehand:  { build: ./stagehand }
-  postgres:   { image: postgis/postgis:16-3.4, volumes: [pgdata:/var/lib/postgresql/data] }
+  postgres:   { build: ./postgres, volumes: [pgdata:/var/lib/postgresql/data] }
   neo4j:      { image: neo4j:5,    volumes: [neo4jdata:/data] }
-  qdrant:     { image: qdrant/qdrant, volumes: [qdrantdata:/qdrant/storage] }
 
-volumes: { pgdata: {}, neo4jdata: {}, qdrantdata: {} }
+volumes: { pgdata: {}, neo4jdata: {} }
 ```
+
+`postgres` is the one stateful service built rather than pulled: it needs PostGIS **and**
+pgvector in the same instance, and no official image provides both. The Dockerfile is
+`FROM postgis/postgis:16-3.4` plus the pgvector package — a few lines, pinned, and preferable
+to a third-party combined image for a service that holds the data. Both extensions are created
+by migration, not by an init script, so a fresh database and an existing one take the same
+path.
 
 ### Twelve-factor rules from day one
 
@@ -931,8 +972,8 @@ So this lifts to the cloud without a rewrite:
    connections, schedules, and secrets never live in images or the database. Mutable
    operational inventories such as enabled crawl targets are application data in Postgres,
    with changes audited through subsequent `ingest.run` snapshots.
-2. **No hardcoded service hostnames** — `POSTGRES_HOST`, `NEO4J_URI`, `QDRANT_URL` etc.,
-   defaulted to Compose service names but always overridable
+2. **No hardcoded service hostnames** — `POSTGRES_HOST`, `NEO4J_URI`, `EMBEDDING_API_BASE_URL`
+   etc., defaulted to Compose service names or provider defaults but always overridable
 3. **Named volumes for all stateful services** — never state inside a container layer
 4. **Stateless API containers** — sessions in signed cookies, not in memory and not in a
    session store (§13)
@@ -947,11 +988,20 @@ So this lifts to the cloud without a rewrite:
 Target: a cheap provider rather than full AWS. Railway, Render, and Fly all read a Compose
 file reasonably well.
 
-Cost consideration to plan for early: **managed Neo4j and Qdrant are the expensive pieces.**
-Realistic v1 shape is app containers on the PaaS, Postgres managed (cheap and available
-everywhere), and Neo4j + Qdrant self-hosted together on a small VPS. Worth pricing before
-committing, since it affects whether the graph and vector layers stay separate services or
-get folded into Postgres extensions (`pgvector`, recursive CTEs) as a fallback.
+Cost consideration to plan for early: **Neo4j is the only stateful service left outside
+Postgres,** and managed Neo4j is the expensive piece. Realistic v1 shape is app containers on
+the PaaS, Postgres managed, and Neo4j self-hosted on a small VPS.
+
+Vectors are deliberately not a line item here. Folding them into Postgres is the chosen
+design (§13), not a fallback taken under cost pressure — the reasoning is about where §4's
+filters run, and the saved service is a consequence rather than the motive. One constraint it
+adds: the managed Postgres has to offer both PostGIS and pgvector. The major providers do, but
+it is worth confirming before picking one, because it is the sort of thing discovered after
+migrating.
+
+The open question is whether the graph layer eventually folds in too — recursive CTEs over
+Postgres instead of a Neo4j to host — which would leave a single stateful service. That trade
+is unresolved and belongs to phase 5's experience, not to this decision.
 
 ---
 
@@ -1012,8 +1062,13 @@ installs to a phone home screen.
 
 - **4a** — `ingest_meetup` DAG; two sources now producing overlapping events. The same
   migration drops `ingest.run.city_searched`, superseded by `market_id` in 2f
-- **4b** — Qdrant container; `event_listings` collection with geo + `starts_at_epoch`
-  payload indexes
+- **4b** — pgvector migration and embedding pipeline: the PostGIS-plus-pgvector image (§9),
+  `CREATE EXTENSION vector`, `source_listing.embedding vector(1536)` with its HNSW
+  `vector_cosine_ops` index, and the ingestion step that fills it. Removes the `qdrant`
+  service, its volume, its `QDRANT_*` configuration, and the `ingestion.qdrant` module. The
+  collection provisioned by the first 4b commit is retired rather than extended — the Qdrant
+  experience it bought is what makes §13's comparison an informed one, and §12 keeps the
+  benchmark open
 - **4c** — Exact-match shortcut: `google_place_id` + start-minute + normalized title
 - **4d** — `dedup_pending` DAG: hard filter (±90min, 500m) → cosine similarity → resolve
 - **4e** — Canonical/source split in the UI: one pin, a registration button per source
@@ -1077,11 +1132,14 @@ resent it.
 
 ### Phase 9 — Deploy
 
-- **9a** — Price the target provider; decide managed vs. self-hosted for Neo4j and Qdrant
+- **9a** — Price the target provider; decide managed vs. self-hosted for Neo4j, and confirm
+  the managed Postgres offers PostGIS and pgvector before committing to it (§10)
 - **9b** — Managed Postgres, app containers on the PaaS, secrets from provider env
 - **9c** — Domain, TLS, OAuth redirect URIs for production
-- **9d** — Backups for Postgres; documented rebuild path for Neo4j and Qdrant (both are
-  projections, so restore = re-run the DAG)
+- **9d** — Backups for Postgres; documented rebuild path for Neo4j (a projection, so restore
+  = re-run the DAG). Embeddings need no separate path now that they sit in Postgres — they are
+  covered by the same backup, and re-derivable by re-embedding if one is ever older than the
+  listings
 
 *Done when:* it's on the internet and the nightly ingestion runs without you watching.
 
@@ -1103,7 +1161,10 @@ The point of the project — a known domain to try unfamiliar tools in. Candidat
 - **API**: GraphQL layer over the REST core
 - **Frontend**: swap Google Maps for MapLibre + self-hosted tiles (also unlocks true offline
   maps, since tiles could be cached by the service worker)
-- **Vector**: compare Qdrant against pgvector on the same dedup workload
+- **Vector**: Qdrant against the pgvector baseline on the same dedup workload — an explicit
+  try-later, not a closed door. The 4b collection setup was written once already, so the
+  comparison starts from a working configuration; what it needs is a corpus large enough for
+  the index to matter, which §4's hard filters currently prevent (§13)
 - **Infra**: Terraform the deployment; try Nomad or k3s
 - **Observability**: OpenTelemetry tracing across ingestion → API → frontend
 - **LLM**: category classification and description summarization at ingest time
@@ -1144,6 +1205,17 @@ Settled, recorded so they don't get relitigated:
 - **Event timezone is resolved per event at ingest**, not derived from the venue. The source
   listing's timezone is carried into `canonical_event.timezone`, which is NOT NULL; `venue`
   has no timezone column. Settled by implementation in Phase 2 rather than in advance. (§3.1)
+- **pgvector in Postgres, not a dedicated vector service.** §4's hard filters — ±90 minutes
+  and 500m — run before similarity and leave a handful of candidates, which is precisely the
+  regime where a dedicated vector store contributes least; its advantage is approximate search
+  over millions of vectors, and dedup never searches more than a few. Keeping the embedding on
+  `source_listing` makes matching one query in one planner instead of shipping ids between two
+  systems, and it removes a stateful service from §10. The tradeoff is accepted knowingly: this
+  spends one of the two deliberately-unfamiliar technologies §1 exists to provide, and it is
+  affordable because the Qdrant learning is already banked from the first 4b commit. The cost
+  it adds is a built `postgres` image, since no official image carries PostGIS and pgvector
+  together (§9). Qdrant stays in §12 as an explicit try-later, to be benchmarked against this
+  baseline rather than assumed better. (§2, §3.4, §4, §9, §10, §11 4b)
 
 ## 14. Open Questions
 
