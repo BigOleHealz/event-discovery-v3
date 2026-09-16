@@ -119,6 +119,8 @@ CREATE TABLE source_listing (
     price_min           NUMERIC,
     price_max           NUMERIC,
     raw_payload         JSONB NOT NULL,
+    extraction_model    TEXT,                   -- null when a code adapter parsed it (§5)
+    extraction_prompt_version SMALLINT,         -- which instruction produced these fields
     ingestion_run_id    UUID NOT NULL,
     first_seen_at       TIMESTAMPTZ DEFAULT now(),
     last_seen_at        TIMESTAMPTZ DEFAULT now(),
@@ -271,6 +273,22 @@ CREATE TABLE ingest.crawl_target (
 );
 
 CREATE INDEX ON ingest.crawl_target (source, market_id) WHERE enabled;
+
+-- One row per source: how to fetch it and how to read what comes back. crawl_target says
+-- *where* to look and is multiplied by market; this says *how*, and is not. Onboarding a
+-- city's local sites is rows here plus rows there — no deploy, no new Python module.
+CREATE TABLE ingest.source_adapter (
+    source          TEXT PRIMARY KEY,    -- matches ingest.crawl_target.source
+    fetch_method    TEXT NOT NULL,       -- 'api' | 'http' | 'stagehand'
+    priority        SMALLINT NOT NULL,   -- merge-conflict precedence, lower wins (§4)
+    extraction      JSONB,               -- target schema + instruction; null for API sources
+    pagination      JSONB,               -- how to advance: query param, next link, or action
+    model           TEXT,                -- extraction model; null when code does the parsing
+    prompt_version  SMALLINT,            -- bumped whenever extraction or instruction changes
+    enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    updated_at      TIMESTAMPTZ DEFAULT now()
+);
 
 CREATE TABLE ingest.run (
     id              UUID PRIMARY KEY,
@@ -522,7 +540,10 @@ Exact-match shortcut: if two listings share a `google_place_id` **and** a start 
 minute **and** a normalized title, skip the vector step entirely.
 
 Merge conflicts (differing titles/descriptions across sources) resolve by source priority,
-configurable — currently Eventbrite > Meetup > scraped sites.
+which lives in `ingest.source_adapter.priority` (§3.2) rather than in a constant — currently
+Eventbrite > Meetup > scraped sites. Model-extracted sites rank below both API sources
+deliberately: their fields are inferred rather than declared, and §8 explains why that
+warrants less trust in a conflict.
 
 ### Manual review queue
 
@@ -565,8 +586,8 @@ pins, never to wrongly merged events.
 |---|---|---|
 | `ingest_meetup` | daily 03:00 | Official API where available |
 | `ingest_eventbrite` | daily 03:15 | Official API |
-| `ingest_site_generic` | daily 03:30 | HTTP + parser per site config |
-| `ingest_site_stagehand` | daily 04:00 | JS-rendered sites (e.g. Philly listings) |
+| `ingest_site_generic` | daily 03:30 | Plain HTTP fetch, then the shared extraction step |
+| `ingest_site_stagehand` | daily 04:00 | Browser fetch for JS-rendered or interaction-gated sites |
 | `geocode_pending` | hourly | Resolve addresses → coordinates |
 | `dedup_pending` | hourly | Run the matching pipeline |
 | `project_to_neo4j` | hourly | Rebuild graph projection |
@@ -685,11 +706,45 @@ Verified working for events the token does not own.
 - Cache by event id with a TTL. Most events don't change between nightly runs, and re-fetching
   unchanged events is the fastest way to burn quota for nothing.
 
-### Stagehand
+### Stagehand and model-driven extraction
 
 Used for sites that render listings client-side or hide them behind interaction. Runs as
 its own container so browser dependencies stay out of the Airflow image. Airflow tasks call
 it over HTTP and get structured JSON back.
+
+**Extraction is model-driven, not selector-driven.** Stagehand reads a page against a target
+schema and an instruction rather than a set of CSS paths. This is the design decision that
+makes a city's local sites tractable: a site becomes a row in `ingest.source_adapter`
+(schema, instruction, pagination) plus `ingest.crawl_target` rows for its listing URLs, not a
+bespoke Python parser. Onboarding a market's long tail is a migration, and the per-city cost
+stops scaling in code.
+
+**Fetching and extraction are separate concerns.** `fetch_method` decides how bytes are
+obtained — `http` for server-rendered pages, `stagehand` when JavaScript or interaction is
+required — and both feed the same extraction step. Driving a browser and a model over a page
+`requests` could have fetched is real money, so the cheap path stays.
+
+**Infer once, then replay.** A model call per listing page per night, times sites, times
+markets, is the cost that gets away from you. So the model is used to *derive* an extraction
+plan, which is cached against the source and replayed deterministically on subsequent runs.
+The model is re-invoked on a cache miss or when validation fails — which is also what makes
+the nightly run cheap and repeatable rather than a fresh inference every time.
+
+**Validation is the tripwire.** Selector-based scrapers break loudly when a site is
+redesigned, and that breakage is useful information. Model extraction is designed to survive
+redesigns, so that signal disappears; a per-source validation failure rate replaces it.
+Required fields present, start time parseable, address geocodable — and a source whose failure
+rate jumps has changed underneath you even though nothing threw.
+
+**Extracted fields carry their provenance.** `source_listing.extraction_model` and
+`extraction_prompt_version` record what produced a listing's fields, for the same reason §13
+pins the embedding model: when the model or instruction changes, you need to know which rows
+predate the change instead of inferring it from timestamps.
+
+API sources keep their code adapters. Parsing a documented JSON response is deterministic,
+free, and already written — a model adds cost and variance for no benefit. `extraction` is
+null for those rows, and `ingest.source_adapter` still lists them so there is one inventory
+of sources with one place for fetch method and merge priority.
 
 ### Online-event filtering
 
@@ -927,6 +982,14 @@ containers, not mocks — wherever the dependency is cheap to run.
   or notification lead time takes a clock parameter. Freeze it in tests.
 - **External APIs are recorded.** Google Geocoding, Meetup, Eventbrite, Twilio: record once
   with `vcr.py` (or hand-written fixtures), replay in CI. No test spends a real API call.
+- **Model extraction is recorded on both sides.** For a model-extracted source the fixture is
+  the captured page *and* the model's response, both replayed — no test calls a model, for cost
+  and for determinism. Assert the fields that matter (title, start time, address), not exact
+  wording, because asserting on one sample of a nondeterministic output is asserting on luck.
+  Note what this costs: the rule above relies on a fixture failing when a site is redesigned,
+  and model extraction is built to survive redesigns. Validation carries that load instead — a
+  test per source that every required field is present, the start time parses, and the address
+  is geocodable, with the failure rate tracked per source (§5).
 - **Constraints are tested as behaviour.** The unique index on
   `(user_id, canonical_event_id, trigger)` has a test that tries to double-send and asserts
   the insert fails — that constraint is the anti-spam guarantee, so it needs a test proving it.
@@ -1139,8 +1202,10 @@ resent it.
 ### Phase 8 — Hard sources
 
 - **8a** — Stagehand container with an HTTP interface, browser deps isolated from Airflow
-- **8b** — Per-site parser configs; `ingest_site_stagehand` DAG
-- **8c** — Philly-style JS-rendered sites onboarded
+- **8b** — `ingest.source_adapter` extraction configs — target schema, instruction,
+  pagination — plus the `ingest_site_stagehand` DAG and the derive-once-then-replay cache
+- **8c** — Philly-style JS-rendered sites onboarded, then one more market's local sites, which
+  is what proves a city is rows rather than code
 - **8d** — Per-source rate limiting and ToS review before each site goes live
 
 *Done when:* a site with no API and no server-rendered listings is ingesting nightly.
@@ -1250,6 +1315,19 @@ Settled, recorded so they don't get relitigated:
   and changing model families is a migration plus a re-embed, not a collection rebuild. The
   provider, model name, and key are environment config; the dimension is deliberately not,
   because two places holding it is two places to disagree. (§3.4, §12)
+- **Scraped sites are extracted by model, not by selectors.** Stagehand reads a page against a
+  target schema and an instruction, so a site is configuration — a row in
+  `ingest.source_adapter` plus `ingest.crawl_target` rows — instead of a bespoke parser. This is
+  what makes adding cities sustainable: the per-market cost of local sites stays in data, where
+  API sources already are, rather than growing a Python module per site per city. Three costs
+  come with it, each with its answer. A model call per page per night per market, answered by
+  deriving the extraction plan once and replaying it from cache, re-inferring only on a miss or
+  a validation failure. Nondeterministic output, answered by recording both the page and the
+  model response as fixtures and asserting on fields rather than wording (§8). Lower-confidence
+  fields feeding dedup, answered by validation gates and by merge priority ranking these sources
+  below both API sources (§4). Extraction stays out of code for scraped sites and stays in code
+  for API sources, where a documented JSON response makes a model pure overhead.
+  (§3.1, §3.2, §5, §8, §11 8b)
 
 ## 14. Open Questions
 
