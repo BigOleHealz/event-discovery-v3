@@ -11,6 +11,7 @@ from datetime import timedelta
 from ingestion.clock import Clock
 from ingestion.database import IngestionRepository
 from ingestion.eventbrite import (
+    EventbriteEventUnavailable,
     EventbriteListingClient,
     EventbriteRateLimited,
     EventDetailFetcher,
@@ -109,6 +110,7 @@ def fetch_and_stage_eventbrite_details(
     staged = 0
     fetched = 0
     cached = 0
+    skipped = 0
     partial_reason: str | None = None
     for reference in event_references:
         observed_at = clock()
@@ -119,6 +121,10 @@ def fetch_and_stage_eventbrite_details(
         if payload is None:
             try:
                 payload = fetcher.fetch_event_detail(reference.event_id)
+            except EventbriteEventUnavailable as error:
+                skipped += 1
+                LOGGER.warning("Skipping unavailable Eventbrite detail: %s", error)
+                continue
             except EventbriteRateLimited as error:
                 partial_reason = str(error)
                 LOGGER.warning(
@@ -143,12 +149,18 @@ def fetch_and_stage_eventbrite_details(
             cached += 1
         repository.stage_event_detail(run_id=run_id, payload=payload, seen_at=observed_at)
         staged += 1
+    if skipped:
+        skipped_reason = f"Skipped {skipped} unavailable Eventbrite event(s)"
+        partial_reason = (
+            f"{partial_reason}; {skipped_reason}" if partial_reason else skipped_reason
+        )
     return EventbriteDetailSummary(
         staged=staged,
         fetched=fetched,
         cached=cached,
         partial=partial_reason is not None,
         partial_reason=partial_reason,
+        skipped=skipped,
     )
 
 

@@ -128,13 +128,14 @@ class EventbriteCrawlSummary:
 
 @dataclass(frozen=True)
 class EventbriteDetailSummary:
-    """Detail-fetch funnel and any rate-limit interruption."""
+    """Detail-fetch funnel, unavailable events, and any rate-limit interruption."""
 
     staged: int
     fetched: int
     cached: int
     partial: bool
     partial_reason: str | None
+    skipped: int = 0
 
 
 @dataclass(frozen=True)

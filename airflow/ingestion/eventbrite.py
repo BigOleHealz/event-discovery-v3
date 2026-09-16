@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from time import monotonic, sleep
 from typing import Protocol, cast
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 
@@ -24,10 +24,7 @@ from ingestion.models import (
 )
 
 LOGGER = logging.getLogger(__name__)
-EVENT_URL_PATTERN = re.compile(
-    r'(?P<url>(?:https://www\.eventbrite\.com)?/e/[^"\'<>\s]+-'
-    r'(?P<event_id>\d+)(?:\?[^"\'<>\s]*)?)'
-)
+EVENT_URL_PATH_PATTERN = re.compile(r'/e/[^"\'<>\s]+-(?P<event_id>[0-9]+)/?')
 SERVER_DATA_MARKER = "window.__SERVER_DATA__ = "
 RATE_LIMIT_PATTERN = re.compile(
     r"(?:token|key):\S+\s+(?P<used>\d+)/(?P<limit>\d+)\s+reset=(?P<reset>\d+)s"
@@ -51,6 +48,13 @@ class EventbriteRateLimited(RuntimeError):
         if retry_after_seconds is not None:
             message += f"; retry after {retry_after_seconds:g} seconds"
         super().__init__(message)
+
+
+class EventbriteEventUnavailable(RuntimeError):
+    """One event cannot be accessed; other event details may still be fetched."""
+
+    def __init__(self, event_id: str, status_code: int) -> None:
+        super().__init__(f"Eventbrite event {event_id} is unavailable (HTTP {status_code})")
 
 
 @dataclass(frozen=True)
@@ -235,12 +239,15 @@ class ApiEventDetailFetcher:
         )
         if response.status_code == 429:
             raise EventbriteRateLimited(_retry_after_seconds(response))
-        response.raise_for_status()
+        if response.status_code not in (403, 404, 410):
+            response.raise_for_status()
         quota = parse_rate_limit_header(response.headers.get("x-rate-limit"))
         if quota is not None:
             self._quota = quota
         elif self._quota is None:
             LOGGER.warning("Eventbrite detail response omitted X-Rate-Limit")
+        if response.status_code in (403, 404, 410):
+            raise EventbriteEventUnavailable(event_id, response.status_code)
         return _json_object(response.content)
 
 
@@ -274,30 +281,42 @@ def parse_listing_event_references(
 
     references: dict[str, EventbriteEventReference] = {}
     for result in results:
-        if not isinstance(result, dict):
-            raise EventbriteParseError("Eventbrite listing result must be an object")
-        typed_result = cast(dict[str, object], result)
-        result_id = _required_string(typed_result, "id")
-        raw_url = _required_string(typed_result, "url")
-        match = EVENT_URL_PATTERN.fullmatch(html.unescape(raw_url))
-        if match is None:
-            raise EventbriteParseError("Eventbrite listing result URL has no event id")
-        event_id = match.group("event_id")
-        if event_id != result_id:
-            raise EventbriteParseError(
-                f"Eventbrite listing result id {result_id} does not match URL id {event_id}"
-            )
-        matched_url = match.group("url")
-        absolute_url = (
-            matched_url if matched_url.startswith("http") else f"{web_base_url}{matched_url}"
-        )
-        parsed = urlsplit(absolute_url)
-        canonical_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
-        references.setdefault(
-            event_id,
-            EventbriteEventReference(event_id=event_id, canonical_url=canonical_url),
-        )
+        try:
+            reference = _parse_listing_reference(result, web_base_url=web_base_url)
+        except ValueError as error:
+            # Includes EventbriteParseError and malformed URLs from urlsplit.
+            # A bad individual result must not discard the rest of the crawl.
+            LOGGER.warning("Skipping Eventbrite listing result: %s", error)
+            continue
+        references.setdefault(reference.event_id, reference)
     return tuple(references.values())
+
+
+def _parse_listing_reference(result: object, *, web_base_url: str) -> EventbriteEventReference:
+    if not isinstance(result, dict):
+        raise EventbriteParseError("Eventbrite listing result must be an object")
+    typed_result = cast(dict[str, object], result)
+    result_id = _required_string(typed_result, "id")
+    raw_url = _required_string(typed_result, "url")
+    # Search results can link to another Eventbrite locale (e.g. co.uk),
+    # even on a US search page. Identity is in the path, not the hostname.
+    parsed = urlsplit(urljoin(f"{web_base_url.rstrip('/')}/", html.unescape(raw_url)))
+    canonical_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise EventbriteParseError(
+            f"Eventbrite listing result {result_id} URL must be HTTP(S)"
+        )
+    match = EVENT_URL_PATH_PATTERN.fullmatch(parsed.path)
+    if match is None:
+        raise EventbriteParseError(
+            f"Eventbrite listing result {result_id} URL has no event id: {canonical_url}"
+        )
+    event_id = match.group("event_id")
+    if event_id != result_id:
+        raise EventbriteParseError(
+            f"Eventbrite listing result id {result_id} does not match URL id {event_id}"
+        )
+    return EventbriteEventReference(event_id=event_id, canonical_url=canonical_url)
 
 
 def parse_rate_limit_header(value: str | None) -> RateLimitQuota | None:

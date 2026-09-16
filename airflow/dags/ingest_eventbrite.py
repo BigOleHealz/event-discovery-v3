@@ -192,6 +192,7 @@ def build_ingest_eventbrite():
             "staged": summary.staged,
             "detail_fetched": summary.fetched,
             "detail_cached": summary.cached,
+            "detail_skipped": summary.skipped,
             "partial": summary.partial,
             "partial_reason": summary.partial_reason,
         }

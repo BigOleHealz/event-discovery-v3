@@ -7,11 +7,13 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
+import httpx
 import psycopg
 import pytest
+from test_eventbrite import config
 
 from ingestion.database import IngestionRepository
-from ingestion.eventbrite import EventbriteRateLimited
+from ingestion.eventbrite import ApiEventDetailFetcher, EventbriteRateLimited
 from ingestion.models import (
     EventbriteEventReference,
     EventbriteListingPage,
@@ -300,4 +302,82 @@ def test_429_stages_completed_details_and_marks_run_partial(database_url: str) -
         1,
         0,
         "Eventbrite detail API returned 429; retry after 60 seconds",
+    )
+
+
+@pytest.mark.parametrize("status_code", [403, 404, 410])
+def test_unavailable_detail_is_skipped_and_retry_reuses_successes(
+    database_url: str, status_code: int,
+) -> None:
+    repository = IngestionRepository(database_url)
+    run_id = open_run(repository, "unavailable-detail")
+    references = tuple(
+        EventbriteEventReference(event_id, f"https://www.eventbrite.com/e/show-{event_id}")
+        for event_id in ("1001", "1251397667109", "1003")
+    )
+    calls: list[str] = []
+    forbidden = json.loads((DETAIL_FIXTURE_PATH.parent / "detail_forbidden.json").read_text())
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        event_id = request.url.path.rstrip("/").rsplit("/", 1)[1]
+        calls.append(event_id)
+        if event_id == "1251397667109":
+            return httpx.Response(status_code, json=forbidden)
+        return httpx.Response(200, json=detail(event_id))
+
+    with ApiEventDetailFetcher(config(), transport=httpx.MockTransport(handler)) as fetcher:
+        for attempt in range(2):
+            summary = fetch_and_stage_eventbrite_details(
+                event_references=references, fetcher=fetcher, repository=repository,
+                run_id=run_id, clock=frozen_clock, cache_ttl=timedelta(hours=24),
+            )
+            assert summary.staged == 2
+            assert summary.fetched == (2 if attempt == 0 else 0)
+            assert summary.cached == (0 if attempt == 0 else 2)
+            assert summary.skipped == 1
+            assert summary.partial is True
+            assert summary.partial_reason == "Skipped 1 unavailable Eventbrite event(s)"
+            repository.mark_partial(
+                run_id=run_id, events_found=3, listing_appearances=3,
+                detail_fetched=summary.fetched, detail_cached=summary.cached,
+                events_rejected_online=0, reason=summary.partial_reason, finished_at=FROZEN_TIME,
+            )
+    assert calls == ["1001", "1251397667109", "1003", "1251397667109"]
+    with psycopg.connect(psycopg_url(database_url)) as connection:
+        assert connection.execute(
+            "SELECT source_event_id FROM source_listing ORDER BY source_event_id"
+        ).fetchall() == [("1001",), ("1003",)]
+        assert connection.execute(
+            "SELECT count(*) FROM ingest.event_detail_cache"
+        ).fetchone() == (2,)
+        assert connection.execute(
+            "SELECT status, events_found, error_message FROM ingest.run WHERE id = %s", (run_id,),
+        ).fetchone() == ("partial", 3, "Skipped 1 unavailable Eventbrite event(s)")
+
+
+def test_rate_limit_after_skipped_event_still_stops_fetching(database_url: str) -> None:
+    repository = IngestionRepository(database_url)
+    run_id = open_run(repository, "skip-then-rate-limit")
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(403 if len(calls) == 1 else 429, headers={"retry-after": "60"})
+
+    references = tuple(
+        EventbriteEventReference(str(i), f"https://www.eventbrite.com/e/show-{i}")
+        for i in range(3)
+    )
+    with ApiEventDetailFetcher(config(), transport=httpx.MockTransport(handler)) as fetcher:
+        summary = fetch_and_stage_eventbrite_details(
+            event_references=references, fetcher=fetcher, repository=repository,
+            run_id=run_id, clock=frozen_clock, cache_ttl=timedelta(hours=24),
+        )
+    assert len(calls) == 2
+    assert summary.staged == 0
+    assert summary.skipped == 1
+    assert summary.partial is True
+    assert summary.partial_reason == (
+        "Eventbrite detail API returned 429; retry after 60 seconds; "
+        "Skipped 1 unavailable Eventbrite event(s)"
     )
