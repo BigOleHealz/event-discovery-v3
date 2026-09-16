@@ -277,8 +277,7 @@ CREATE TABLE ingest.run (
     run_date        DATE NOT NULL,
     source          TEXT NOT NULL,
     source_url      TEXT,
-    city_searched   TEXT NOT NULL,      -- superseded by market_id; dropped in 4a
-    market_id       UUID REFERENCES ingest.market(id),
+    market_id       UUID NOT NULL REFERENCES ingest.market(id),
     search_bounds   GEOGRAPHY(POLYGON, 4326),
     categories      TEXT[],             -- categories crawled in this run
     window_start    DATE,               -- date window the crawl covered
