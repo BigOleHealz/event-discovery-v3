@@ -30,6 +30,14 @@ CANDIDATE_SQL = """
           AND event.starts_at BETWEEN incoming.starts_at - INTERVAL '90 minutes'
                                   AND incoming.starts_at + INTERVAL '90 minutes'
           AND ST_DWithin(event.location, incoming.location, 500)
+          AND NOT EXISTS (
+              SELECT 1 FROM dedup_review review
+              JOIN source_listing a ON a.id = review.listing_a_id
+              JOIN source_listing b ON b.id = review.listing_b_id
+              WHERE review.status IN ('pending', 'distinct', 'skipped')
+                AND a.canonical_event_id IN (event.id, incoming.canonical_event_id)
+                AND b.canonical_event_id IN (event.id, incoming.canonical_event_id)
+          )
     )
     SELECT eligible.id, eligible.canonical_event_id,
            1 - (eligible.embedding <=> incoming.embedding) AS similarity

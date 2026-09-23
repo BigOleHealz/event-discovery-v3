@@ -113,6 +113,39 @@ def test_labelled_classification_and_retry(database_url: str, pair: dict) -> Non
             ).fetchone() == (2,)
         if state == "review":
             assert matched == first
+            review = connection.execute("""
+                SELECT listing_a_id, listing_b_id, status, created_at FROM dedup_review
+            """).fetchall()
+            assert review == [(*sorted((first, second)), "pending", FIRST_SEEN)]
+        else:
+            assert connection.execute("SELECT count(*) FROM dedup_review").fetchone() == (0,)
+
+
+@pytest.mark.parametrize("status", ["pending", "distinct", "skipped"])
+def test_unmerged_review_survives_automatic_reprocessing(database_url: str, status: str) -> None:
+    pair = next(pair for pair in CORPUS if pair["expected"] == "review")
+    first, second = seed_pair(database_url, pair)
+    dedup_pending(database_url, clock=lambda: FIRST_SEEN)
+    reviewer = uuid.uuid4()
+    with psycopg.connect(psycopg_url(database_url)) as connection:
+        connection.execute(
+            "INSERT INTO app_user (id, is_shadow) VALUES (%s, true)", (reviewer,)
+        )
+        if status != "pending":
+            connection.execute("""
+                UPDATE dedup_review SET status = %s, decided_by = %s, decided_at = %s
+            """, (status, reviewer, FIRST_SEEN))
+        # Even an identical new embedding cannot bypass the review queue.
+        connection.execute("""
+            UPDATE source_listing SET dedup_state = 'pending',
+                embedding = (SELECT embedding FROM source_listing WHERE id = %s)
+            WHERE id = %s
+        """, (first, second))
+    assert dedup_pending(database_url, clock=lambda: FIRST_SEEN)["distinct"] == 1
+    with psycopg.connect(psycopg_url(database_url)) as connection:
+        assert connection.execute("""
+            SELECT count(DISTINCT canonical_event_id) FROM source_listing
+        """).fetchone() == (2,)
 
 
 @pytest.mark.parametrize(

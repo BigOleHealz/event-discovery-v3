@@ -1,11 +1,15 @@
 import { EventMap } from "./EventMap";
-import { loadConfig } from "./config";
+import { DedupReview } from "./DedupReview";
+import { loadApiBaseUrl, loadConfig } from "./config";
 import "./styles.css";
 
 export function App() {
   let config;
+  const reviewing = window.location.pathname.replace(/\/$/, "") === "/admin/dedup";
+  let apiBaseUrl;
   try {
-    config = loadConfig();
+    apiBaseUrl = loadApiBaseUrl();
+    if (!reviewing) config = loadConfig();
   } catch (reason: unknown) {
     const message = reason instanceof Error ? reason.message : "Application configuration is invalid";
     return (
@@ -16,6 +20,9 @@ export function App() {
       </main>
     );
   }
+
+  if (reviewing) return <DedupReview apiBaseUrl={apiBaseUrl} />;
+  if (!config) return null;
 
   return (
     <main className="app-shell">

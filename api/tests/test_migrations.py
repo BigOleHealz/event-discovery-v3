@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from app.seed import EVENTS, VENUES, seed_database
 
 EXPECTED_TABLES = (
+    "dedup_review",
     "venue",
     "canonical_event",
     "source_listing",

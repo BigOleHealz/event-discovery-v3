@@ -11,9 +11,13 @@ export interface AppConfig {
   googleMapsMapId: string;
 }
 
+export function loadApiBaseUrl(): string {
+  return requiredEnvironmentValue(import.meta.env.VITE_API_BASE_URL, "VITE_API_BASE_URL");
+}
+
 export function loadConfig(): AppConfig {
   return {
-    apiBaseUrl: requiredEnvironmentValue(import.meta.env.VITE_API_BASE_URL, "VITE_API_BASE_URL"),
+    apiBaseUrl: loadApiBaseUrl(),
     googleMapsApiKey: requiredEnvironmentValue(
       import.meta.env.VITE_GOOGLE_MAPS_API_KEY,
       "VITE_GOOGLE_MAPS_API_KEY",
