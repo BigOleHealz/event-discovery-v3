@@ -9,6 +9,9 @@ set -a
 source "$env_file"
 set +a
 
+# Never seed, review, or remove volumes belonging to the development stack.
+export COMPOSE_PROJECT_NAME="event-discovery-e2e-$$"
+
 POSTGRES_EXTERNAL_PORT=0
 API_EXTERNAL_PORT=0
 WEB_EXTERNAL_PORT=0
@@ -21,7 +24,7 @@ export ADMIN_REVIEW_TOKEN=phase4f-fixture-token
 export ADMIN_REVIEW_USER_ID=4f000000-0000-0000-0000-000000000001
 
 cleanup() {
-  docker compose --env-file "$env_file" --file "$compose_file" down
+  docker compose --env-file "$env_file" --file "$compose_file" down --volumes
 }
 trap cleanup EXIT
 

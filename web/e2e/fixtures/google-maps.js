@@ -95,22 +95,28 @@
       this.options = options;
       this.listeners = new Map();
       element.dataset.googleMapReady = "true";
+      window.addEventListener("fixture-map-idle", () => {
+        for (const handler of this.listeners.get("idle") ?? []) handler();
+      });
     }
 
     addListener(eventName, handler) {
-      this.listeners.set(eventName, handler);
+      const handlers = this.listeners.get(eventName) ?? new Set();
+      handlers.add(handler);
+      this.listeners.set(eventName, handlers);
       if (eventName === "idle") {
         queueMicrotask(handler);
       }
       return {
-        remove: () => this.listeners.delete(eventName),
+        remove: () => handlers.delete(handler),
       };
     }
 
     getBounds() {
+      const shift = window.fixtureMapLatitudeShift ?? 0;
       return new FixtureLatLngBounds(
-        new FixtureLatLng(39.8, -75.3),
-        new FixtureLatLng(40.15, -74.95),
+        new FixtureLatLng(39.8 + shift, -75.3),
+        new FixtureLatLng(40.15 + shift, -74.95),
       );
     }
 

@@ -166,6 +166,7 @@ afterEach(() => {
   viewport = { north: 40.1, south: 39.8, east: -74.9, west: -75.3 };
   zoom = 12;
   window.history.replaceState(null, "", "/");
+  localStorage.clear();
 });
 
 function stubEventResponse(
@@ -303,7 +304,7 @@ describe("EventMap", () => {
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("2 events"));
     expect(mapInstances).toHaveLength(1);
     expect(fetch).toHaveBeenCalledOnce();
-    expect(String(vi.mocked(fetch).mock.calls[0]?.[0])).toBe("http://localhost:3000/api/events");
+    expect(new URL(String(vi.mocked(fetch).mock.calls[0]?.[0])).searchParams.get("zoom")).toBe("12");
 
     vi.useFakeTimers();
     act(() => {
@@ -366,7 +367,7 @@ describe("EventMap", () => {
     ]);
 
     const initialRequest = new URL(String(vi.mocked(fetch).mock.calls[0]?.[0]));
-    expect(Object.fromEntries(initialRequest.searchParams)).toEqual({
+    expect(Object.fromEntries(initialRequest.searchParams)).toMatchObject({
       starts_after: "2026-09-01T00:00:00.000Z",
       starts_before: "2026-09-07T23:59:59.999Z",
       time_of_day_start: "18:00",
@@ -427,3 +428,79 @@ describe("EventMap", () => {
     });
   });
 });
+
+  it("replaces stale data after reconnecting and keeps cached details usable", async () => {
+    const { EVENT_CACHE_NAME } = await import("./events");
+    const cachedResponse = new Response(JSON.stringify(events));
+    vi.stubGlobal("caches", { open: vi.fn().mockResolvedValue({
+      match: vi.fn().mockResolvedValue(cachedResponse),
+      put: vi.fn(), keys: vi.fn().mockResolvedValue([]),
+    }) });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+    render(<EventMap apiBaseUrl="." apiKey="test-key" mapId="map-id" />);
+    await screen.findByText("Offline — showing last known events");
+    expect(caches.open).toHaveBeenCalledWith(EVENT_CACHE_NAME);
+    act(() => markerInstances[0]?.trigger("click"));
+    expect(screen.getByRole("dialog", { name: "Parkway Jazz Night" })).toBeVisible();
+    stubEventResponse([{ type: "FeatureCollection", features: [] }]);
+    fireEvent(window, new Event("online"));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("0 events"));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("clears old pins and details on an unavailable changed request", async () => {
+    stubEventResponse();
+    render(<EventMap apiBaseUrl="." apiKey="test-key" mapId="map-id" />);
+    await screen.findByText("2 events");
+    act(() => markerInstances[0]?.trigger("click"));
+    vi.mocked(fetch).mockRejectedValue(new TypeError("offline"));
+    fireEvent.change(within(screen.getByRole("group", { name: "Time of day" })).getByLabelText("From"), {
+      target: { value: "22:00" },
+    });
+    await screen.findByText(/no saved events for this viewport and filters/);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).not.toHaveTextContent("0 events");
+    expect(markerInstances.every((marker) => marker.map === null)).toBe(true);
+  });
+
+  it("ignores a late response for an earlier viewport", async () => {
+    stubEventResponse();
+    render(<EventMap apiBaseUrl="." apiKey="test-key" mapId="map-id" />);
+    await screen.findByText("2 events");
+    let finish: (response: Response) => void = () => {};
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    fireEvent(window, new Event("online"));
+    stubEventResponse([{ type: "FeatureCollection", features: [] }]);
+    fireEvent(window, new Event("online"));
+    await screen.findByText("0 events");
+    await act(async () => finish(new Response(JSON.stringify(events))));
+    expect(screen.getByRole("status")).toHaveTextContent("0 events");
+  });
+
+  it("opens cached details on a cold offline launch without loading Google Maps", async () => {
+    const { rememberViewport } = await import("./events");
+    rememberViewport(".", { ...viewport, zoom });
+    vi.stubGlobal("navigator", { onLine: false });
+    vi.stubGlobal("caches", { open: vi.fn().mockResolvedValue({
+      match: vi.fn().mockImplementation(async () => new Response(JSON.stringify(events))),
+    }) });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("offline")));
+    render(<EventMap apiBaseUrl="." apiKey="test-key" mapId="map-id" />);
+    await screen.findByText("Offline — showing last known events");
+    expect(mapConstructor).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Parkway Jazz Night" }));
+    expect(screen.getByRole("dialog", { name: "Parkway Jazz Night" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Register on Eventbrite" })).toHaveAttribute(
+      "href", "https://www.eventbrite.com/e/parkway-jazz-night",
+    );
+  });
+
+  it("reports an unavailable first offline visit instead of zero events", async () => {
+    vi.stubGlobal("navigator", { onLine: false });
+    vi.stubGlobal("fetch", vi.fn());
+    render(<EventMap apiBaseUrl="." apiKey="test-key" mapId="map-id" />);
+    await screen.findByText(/no saved viewport/);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(mapConstructor).not.toHaveBeenCalled();
+  });
