@@ -8,8 +8,8 @@ from datetime import datetime
 
 import psycopg
 
-from ingestion.eventbrite import parse_eventbrite_event
 from ingestion.geocoding import GeocodedVenue, normalize_address
+from ingestion.sources import parse_source_listing
 
 VENUE_NAMESPACE = uuid.UUID("02ee8c18-cafb-45f9-87d6-122f5d74c978")
 
@@ -19,6 +19,7 @@ class PendingGeocode:
     """One staged listing that still needs an address-to-venue association."""
 
     ingestion_run_id: uuid.UUID
+    source: str
     source_event_id: str
     payload: dict[str, object]
     address: str
@@ -33,32 +34,38 @@ class GeocodeRepository:
         self._database_url = database_url.replace("postgresql+psycopg://", "postgresql://", 1)
 
     def pending(self) -> tuple[PendingGeocode, ...]:
-        """Return accepted, not-yet-canonicalized Eventbrite listings with addresses."""
+        """Return accepted, not-yet-canonicalized source listings with addresses."""
         with psycopg.connect(self._database_url) as connection:
             rows = connection.execute(
                 """
-                SELECT sl.ingestion_run_id, sl.source_event_id, sl.raw_payload
+                SELECT sl.ingestion_run_id, sl.source, sl.source_event_id, sl.raw_payload,
+                       market.timezone
                 FROM source_listing AS sl
+                JOIN ingest.run AS run ON run.id = sl.ingestion_run_id
+                JOIN ingest.market AS market ON market.id = run.market_id
                 LEFT JOIN canonical_event AS event ON event.id = sl.canonical_event_id
-                WHERE sl.source = 'eventbrite'
+                WHERE sl.source IN ('eventbrite', 'meetup')
                   AND (
                     sl.canonical_event_id IS NULL
                     OR event.updated_at IS NULL
                     OR sl.last_seen_at > event.updated_at
                   )
-                ORDER BY sl.source_event_id
+                ORDER BY sl.source, sl.source_event_id
                 """
             ).fetchall()
         pending: list[PendingGeocode] = []
-        for ingestion_run_id, source_event_id, payload in rows:
+        for ingestion_run_id, source, source_event_id, payload, market_timezone in rows:
             if not isinstance(payload, dict):
                 raise TypeError("source_listing.raw_payload must be a JSON object")
-            listing = parse_eventbrite_event(payload)
+            if not isinstance(source, str) or not isinstance(market_timezone, str):
+                raise TypeError("source and market timezone must be text")
+            listing = parse_source_listing(source, payload, market_timezone=market_timezone)
             if listing.venue_address is None:
                 continue
             pending.append(
                 PendingGeocode(
                     ingestion_run_id=ingestion_run_id,
+                    source=source,
                     source_event_id=source_event_id,
                     payload=payload,
                     address=listing.venue_address,

@@ -254,6 +254,48 @@ describe("EventMap", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  it("renders one pin with a registration button for each source", async () => {
+    const merged = structuredClone(events);
+    merged.features = merged.features.slice(0, 1);
+    merged.features[0]!.properties.registration_links.push({
+      source: "meetup",
+      url: "https://www.meetup.com/jazz/events/123",
+    });
+    stubEventResponse([merged]);
+    render(<EventMap apiBaseUrl="." apiKey="test-key" mapId="map-id" />);
+
+    await waitFor(() => expect(markerInstances).toHaveLength(1));
+    expect(screen.getByRole("status")).toHaveTextContent("1 event");
+    act(() => markerInstances[0]?.trigger("click"));
+    const detail = within(screen.getByRole("dialog", { name: "Parkway Jazz Night" }));
+    expect(detail.getAllByRole("link")).toHaveLength(2);
+    expect(detail.getByText("Choose where to register for this event.")).toBeVisible();
+    for (const [source, url] of [
+      ["Eventbrite", "https://www.eventbrite.com/e/parkway-jazz-night"],
+      ["Meetup", "https://www.meetup.com/jazz/events/123"],
+    ]) {
+      const link = detail.getByRole("link", { name: `Register on ${source}` });
+      expect(link).toHaveAttribute("href", url);
+      expect(link).toHaveAttribute("target", "_blank");
+      expect(link).toHaveAttribute("rel", "noreferrer");
+    }
+  });
+
+  it("keeps separate canonical occurrences as separate pins even with the same title", async () => {
+    const separate = structuredClone(events);
+    separate.features[1]!.properties.title = separate.features[0]!.properties.title;
+    separate.features[1]!.geometry = separate.features[0]!.geometry;
+    stubEventResponse([separate]);
+    render(<EventMap apiBaseUrl="." apiKey="test-key" mapId="map-id" />);
+    await waitFor(() => expect(markerInstances).toHaveLength(2));
+    act(() => markerInstances[1]?.trigger("click"));
+    expect(screen.getByRole("dialog").querySelector("time")).toHaveAttribute(
+      "datetime", "2026-09-05T22:30:00Z",
+    );
+    expect(screen.getByText("Registration information is not available.")).toBeVisible();
+    expect(screen.queryByRole("link", { name: /Register on/ })).not.toBeInTheDocument();
+  });
+
   it("debounces map idle events into one bounded viewport refetch", async () => {
     stubEventResponse([events, aggregatedCells]);
     render(<EventMap apiBaseUrl="." apiKey="test-key" mapId="map-id" />);

@@ -56,6 +56,7 @@ def geocode_pending(
                     payload=listing.payload,
                     reason="no_location",
                     rejected_at=clock(),
+                    source=listing.source,
                 )
                 rejected_no_location += 1
             continue

@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal, cast
 
 import psycopg
 
 from ingestion.clock import Clock
-from ingestion.eventbrite import parse_eventbrite_event
 from ingestion.geocoding import normalize_address
-from ingestion.models import ParsedEventbriteListing
+from ingestion.models import ParsedListing
+from ingestion.sources import parse_source_listing
 
 CANONICAL_EVENT_NAMESPACE = uuid.UUID("d3c81426-26c5-49b9-bf16-c1d13aabedcb")
-WriteAction = Literal["created", "updated", "unchanged"]
+WriteAction = Literal["created", "updated", "deduped", "unchanged"]
 
 
 @dataclass(frozen=True)
@@ -25,7 +26,8 @@ class CanonicalizationCandidate:
 
     listing_id: uuid.UUID
     ingestion_run_id: uuid.UUID
-    listing: ParsedEventbriteListing
+    source: str
+    listing: ParsedListing
     normalized_address: str
 
 
@@ -36,41 +38,51 @@ class CanonicalizationSummary:
     candidates: int
     created: int
     updated: int
+    deduped: int
     unchanged: int
     awaiting_geocode: int
 
 
 class CanonicalEventRepository:
-    """Persist one canonical event per source listing without cross-listing deduplication."""
+    """Persist source listings, applying the high-confidence exact-match shortcut."""
 
     def __init__(self, database_url: str) -> None:
         self._database_url = database_url.replace("postgresql+psycopg://", "postgresql://", 1)
 
     def candidates(self) -> tuple[CanonicalizationCandidate, ...]:
-        """Return new or freshly re-scraped Eventbrite listings."""
+        """Return new or freshly re-scraped supported source listings."""
         with psycopg.connect(self._database_url) as connection:
             rows = connection.execute(
                 """
-                SELECT sl.id, sl.ingestion_run_id, sl.raw_payload
+                SELECT sl.id, sl.ingestion_run_id, sl.source, sl.raw_payload,
+                       market.timezone
                 FROM source_listing AS sl
+                JOIN ingest.run AS run ON run.id = sl.ingestion_run_id
+                JOIN ingest.market AS market ON market.id = run.market_id
                 LEFT JOIN canonical_event AS event ON event.id = sl.canonical_event_id
-                WHERE sl.source = 'eventbrite'
+                WHERE sl.source IN ('eventbrite', 'meetup')
                   AND (
                     sl.canonical_event_id IS NULL
                     OR event.updated_at IS NULL
                     OR sl.last_seen_at > event.updated_at
                   )
-                ORDER BY sl.source_event_id
+                ORDER BY sl.source, sl.source_event_id
                 """
             ).fetchall()
 
         candidates: list[CanonicalizationCandidate] = []
-        for listing_id, ingestion_run_id, raw_payload in rows:
+        for listing_id, ingestion_run_id, source, raw_payload, market_timezone in rows:
             if isinstance(raw_payload, str):
                 raw_payload = json.loads(raw_payload)
             if not isinstance(raw_payload, dict):
                 raise TypeError("source_listing.raw_payload must be a JSON object")
-            listing = parse_eventbrite_event(cast(dict[str, object], raw_payload))
+            if not isinstance(source, str) or not isinstance(market_timezone, str):
+                raise TypeError("source and market timezone must be text")
+            listing = parse_source_listing(
+                source,
+                cast(dict[str, object], raw_payload),
+                market_timezone=market_timezone,
+            )
             if listing.venue_address is None:
                 continue
             if not isinstance(listing_id, uuid.UUID) or not isinstance(ingestion_run_id, uuid.UUID):
@@ -79,6 +91,7 @@ class CanonicalEventRepository:
                 CanonicalizationCandidate(
                     listing_id=listing_id,
                     ingestion_run_id=ingestion_run_id,
+                    source=source,
                     listing=listing,
                     normalized_address=normalize_address(listing.venue_address),
                 )
@@ -138,83 +151,174 @@ class CanonicalEventRepository:
             ):
                 return "unchanged"
 
-            event_id = existing_event_id or uuid.uuid5(
-                CANONICAL_EVENT_NAMESPACE,
-                f"eventbrite:{candidate.listing.source_event_id}",
-            )
-            row = connection.execute(
-                """
-                INSERT INTO canonical_event (
-                    id, title, description, starts_at, ends_at, timezone,
-                    venue_id, location, primary_category, created_at, updated_at,
-                    archived_at
+            matched_event_id = (
+                self._exact_match_event_id(
+                    connection=connection,
+                    candidate=candidate,
+                    venue_id=venue_id,
                 )
-                SELECT
-                    %(event_id)s, %(title)s, %(description)s, %(starts_at)s,
-                    %(ends_at)s, %(timezone)s, venue.id, venue.location,
-                    %(primary_category)s, %(written_at)s, %(written_at)s, NULL
-                FROM venue
-                WHERE venue.id = %(venue_id)s AND venue.location IS NOT NULL
-                ON CONFLICT (id) DO UPDATE SET
-                    title = EXCLUDED.title,
-                    description = EXCLUDED.description,
-                    starts_at = EXCLUDED.starts_at,
-                    ends_at = EXCLUDED.ends_at,
-                    timezone = EXCLUDED.timezone,
-                    venue_id = EXCLUDED.venue_id,
-                    location = EXCLUDED.location,
-                    primary_category = EXCLUDED.primary_category,
-                    updated_at = EXCLUDED.updated_at,
-                    archived_at = NULL
-                RETURNING id
-                """,
-                {
-                    "event_id": event_id,
-                    "title": candidate.listing.title,
-                    "description": candidate.listing.description,
-                    "starts_at": candidate.listing.starts_at,
-                    "ends_at": candidate.listing.ends_at,
-                    "timezone": candidate.listing.timezone,
-                    "venue_id": venue_id,
-                    "primary_category": candidate.listing.primary_category,
-                    "written_at": written_at,
-                },
-            ).fetchone()
-            if row is None:
-                raise LookupError(f"venue {venue_id} has no geocoded location")
+                if existing_event_id is None
+                else None
+            )
+            event_id = existing_event_id or matched_event_id
+            if event_id is None:
+                event_id = uuid.uuid5(
+                    CANONICAL_EVENT_NAMESPACE,
+                    f"{candidate.source}:{candidate.listing.source_event_id}",
+                )
+
+            if matched_event_id is None:
+                row = connection.execute(
+                    """
+                    INSERT INTO canonical_event (
+                        id, title, description, starts_at, ends_at, timezone,
+                        venue_id, location, primary_category, created_at, updated_at,
+                        archived_at
+                    )
+                    SELECT
+                        %(event_id)s, %(title)s, %(description)s, %(starts_at)s,
+                        %(ends_at)s, %(timezone)s, venue.id, venue.location,
+                        %(primary_category)s, %(written_at)s, %(written_at)s, NULL
+                    FROM venue
+                    WHERE venue.id = %(venue_id)s AND venue.location IS NOT NULL
+                    ON CONFLICT (id) DO UPDATE SET
+                        title = EXCLUDED.title,
+                        description = EXCLUDED.description,
+                        starts_at = EXCLUDED.starts_at,
+                        ends_at = EXCLUDED.ends_at,
+                        timezone = EXCLUDED.timezone,
+                        venue_id = EXCLUDED.venue_id,
+                        location = EXCLUDED.location,
+                        primary_category = EXCLUDED.primary_category,
+                        updated_at = EXCLUDED.updated_at,
+                        archived_at = NULL
+                    RETURNING id
+                    """,
+                    {
+                        "event_id": event_id,
+                        "title": candidate.listing.title,
+                        "description": candidate.listing.description,
+                        "starts_at": candidate.listing.starts_at,
+                        "ends_at": candidate.listing.ends_at,
+                        "timezone": candidate.listing.timezone,
+                        "venue_id": venue_id,
+                        "primary_category": candidate.listing.primary_category,
+                        "written_at": written_at,
+                    },
+                ).fetchone()
+                if row is None:
+                    raise LookupError(f"venue {venue_id} has no geocoded location")
 
             connection.execute(
                 """
                 UPDATE source_listing
                 SET canonical_event_id = %(event_id)s,
                     url = %(url)s,
-                    registration_url = %(registration_url)s
+                    registration_url = %(registration_url)s,
+                    dedup_state = CASE WHEN %(exact_match)s THEN 'exact' ELSE dedup_state END
                 WHERE id = %(listing_id)s
                 """,
                 {
                     "event_id": event_id,
                     "url": candidate.listing.url,
                     "registration_url": candidate.listing.url,
+                    "exact_match": matched_event_id is not None,
                     "listing_id": candidate.listing_id,
                 },
             )
-            created = existing_event_id is None
+            created = existing_event_id is None and matched_event_id is None
+            deduped = matched_event_id is not None
+            updated = existing_event_id is not None
             run_update = connection.execute(
                 """
                 UPDATE ingest.run
                 SET events_new = COALESCE(events_new, 0) + %(new_count)s,
-                    events_updated = COALESCE(events_updated, 0) + %(updated_count)s
+                    events_updated = COALESCE(events_updated, 0) + %(updated_count)s,
+                    events_deduped = COALESCE(events_deduped, 0) + %(deduped_count)s
                 WHERE id = %(run_id)s
                 """,
                 {
                     "new_count": int(created),
-                    "updated_count": int(not created),
+                    "updated_count": int(updated),
+                    "deduped_count": int(deduped),
                     "run_id": candidate.ingestion_run_id,
                 },
             )
             if run_update.rowcount != 1:
                 raise LookupError(f"ingest.run {candidate.ingestion_run_id} does not exist")
-        return "created" if created else "updated"
+        if created:
+            return "created"
+        if deduped:
+            return "deduped"
+        return "updated"
+
+    @staticmethod
+    def _exact_match_event_id(
+        *,
+        connection: psycopg.Connection[tuple[object, ...]],
+        candidate: CanonicalizationCandidate,
+        venue_id: uuid.UUID,
+    ) -> uuid.UUID | None:
+        normalized_title = normalize_title(candidate.listing.title)
+        if not normalized_title:
+            return None
+        venue_row = connection.execute(
+            "SELECT google_place_id FROM venue WHERE id = %(venue_id)s",
+            {"venue_id": venue_id},
+        ).fetchone()
+        if venue_row is None:
+            raise LookupError(f"venue {venue_id} does not exist")
+        google_place_id = venue_row[0]
+        if not isinstance(google_place_id, str) or not google_place_id:
+            return None
+
+        starts_at_minute = candidate.listing.starts_at.astimezone(UTC).replace(
+            second=0, microsecond=0
+        )
+        match_key = f"{google_place_id}\n{starts_at_minute.isoformat()}\n{normalized_title}"
+        connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%(match_key)s, 0))",
+            {"match_key": match_key},
+        )
+        rows = connection.execute(
+            """
+            SELECT event.id, event.title
+            FROM canonical_event AS event
+            JOIN venue ON venue.id = event.venue_id
+            WHERE venue.google_place_id = %(google_place_id)s
+              AND event.starts_at >= %(starts_at_minute)s
+              AND event.starts_at < %(next_minute)s
+            ORDER BY event.created_at NULLS LAST, event.id
+            FOR UPDATE OF event
+            """,
+            {
+                "google_place_id": google_place_id,
+                "starts_at_minute": starts_at_minute,
+                "next_minute": starts_at_minute + timedelta(minutes=1),
+            },
+        ).fetchall()
+        for event_id, title in rows:
+            if not isinstance(event_id, uuid.UUID) or not isinstance(title, str):
+                raise TypeError("exact-match query returned invalid canonical event fields")
+            if normalize_title(title) == normalized_title:
+                return event_id
+        return None
+
+
+def normalize_title(title: str) -> str:
+    """Return the conservative title identity used by the exact-match shortcut."""
+    normalized = unicodedata.normalize("NFKC", title).casefold()
+    words: list[str] = []
+    current: list[str] = []
+    for character in normalized:
+        if character.isalnum():
+            current.append(character)
+        elif current:
+            words.append("".join(current))
+            current = []
+    if current:
+        words.append("".join(current))
+    return " ".join(words)
 
 
 def canonicalize_pending(
@@ -224,6 +328,7 @@ def canonicalize_pending(
     candidates = repository.candidates()
     created = 0
     updated = 0
+    deduped = 0
     unchanged = 0
     awaiting_geocode = 0
     for candidate in candidates:
@@ -240,12 +345,15 @@ def canonicalize_pending(
             created += 1
         elif action == "updated":
             updated += 1
+        elif action == "deduped":
+            deduped += 1
         else:
             unchanged += 1
     return CanonicalizationSummary(
         candidates=len(candidates),
         created=created,
         updated=updated,
+        deduped=deduped,
         unchanged=unchanged,
         awaiting_geocode=awaiting_geocode,
     )

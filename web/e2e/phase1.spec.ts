@@ -3,8 +3,13 @@ import { readFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 
 const mapsFixturePath = new URL("./fixtures/google-maps.js", import.meta.url);
+const eventCountLabel = (count: number): string => `${count} ${count === 1 ? "event" : "events"}`;
 
 test("renders pins, event detail, and an installable offline shell", async ({ page, context }) => {
+  // This flow opens an individual event; clustering has its own map tests.
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "fixtureMapZoom", { value: 20 });
+  });
   const mapsFixture = await readFile(mapsFixturePath, "utf8");
   await page.route("https://maps.googleapis.com/maps/api/js?*", async (route) => {
     await route.fulfill({
@@ -53,7 +58,7 @@ test("renders pins, event detail, and an installable offline shell", async ({ pa
 
   await page.goto("/");
 
-  await expect(page.getByRole("status")).toHaveText(`${eventCount} events`);
+  await expect(page.getByRole("status")).toHaveText(eventCountLabel(eventCount));
   await expect(page.getByTestId("event-map")).toHaveAttribute("data-google-map-ready", "true");
   await expect(page.locator("[data-event-marker]").first()).toBeVisible();
 
@@ -72,7 +77,7 @@ test("renders pins, event detail, and an installable offline shell", async ({ pa
   ).length;
   await page.getByRole("listbox", { name: /Categories/ }).selectOption(["science"]);
   await expect(page).toHaveURL(/categories=science/);
-  await expect(page.getByRole("status")).toHaveText(`${scienceEventCount} events`);
+  await expect(page.getByRole("status")).toHaveText(eventCountLabel(scienceEventCount));
 
   const manifestHref = await page.locator('link[rel="manifest"]').getAttribute("href");
   expect(manifestHref).not.toBeNull();
@@ -118,7 +123,7 @@ test("renders pins, event detail, and an installable offline shell", async ({ pa
   });
 
   await page.reload();
-  await expect(page.getByRole("status")).toHaveText(`${scienceEventCount} events`);
+  await expect(page.getByRole("status")).toHaveText(eventCountLabel(scienceEventCount));
   await expect
     .poll(() => page.evaluate(() => navigator.serviceWorker.controller !== null))
     .toBe(true);

@@ -10,8 +10,8 @@ from typing import cast
 import psycopg
 from psycopg.types.json import Jsonb
 
-from ingestion.eventbrite import staging_identity
-from ingestion.models import CrawlTarget, EventbriteListingPage, FetchedPage
+from ingestion.models import CrawlTarget, EventbriteListingPage, FetchedPage, MeetupListingPage
+from ingestion.sources import source_identity
 
 RUN_NAMESPACE = uuid.UUID("09ab41b7-5cd1-4328-813c-f2becd62ce20")
 LISTING_NAMESPACE = uuid.UUID("a276b217-3c85-42ea-81a7-a7b26ba6025e")
@@ -31,7 +31,7 @@ class IngestionRepository:
             rows = connection.execute(
                 """
                 SELECT target.id, target.source, target.market_id, market.slug,
-                       market.name, target.source_location, target.category,
+                       market.name, market.timezone, target.source_location, target.category,
                        target.window_days, target.page_cap
                 FROM ingest.crawl_target AS target
                 JOIN ingest.market AS market ON market.id = target.market_id
@@ -48,6 +48,7 @@ class IngestionRepository:
                 market_id,
                 market_slug,
                 market_name,
+                market_timezone,
                 source_location,
                 category,
                 window_days,
@@ -56,7 +57,8 @@ class IngestionRepository:
             if not isinstance(target_id, uuid.UUID) or not isinstance(market_id, uuid.UUID):
                 raise TypeError("crawl_target.id and market_id must be UUIDs")
             if not all(
-                isinstance(value, str) for value in (row_source, market_slug, market_name, category)
+                isinstance(value, str)
+                for value in (row_source, market_slug, market_name, market_timezone, category)
             ):
                 raise TypeError("crawl target source, market, and category must be text")
             if not isinstance(source_location, dict):
@@ -70,6 +72,7 @@ class IngestionRepository:
                     market_id=market_id,
                     market_slug=market_slug,
                     market_name=market_name,
+                    market_timezone=market_timezone,
                     source_location=source_location,
                     category=category,
                     window_days=window_days,
@@ -83,27 +86,27 @@ class IngestionRepository:
         *,
         dag_id: str,
         airflow_run_id: str,
+        source: str,
         source_url: str,
         market_id: uuid.UUID,
-        city: str,
         started_at: datetime,
         categories: tuple[str, ...] = (),
         window_start: date | None = None,
         window_end: date | None = None,
     ) -> uuid.UUID:
-        """Open or reset one deterministic source/location run for an Airflow execution."""
-        run_id = uuid.uuid5(RUN_NAMESPACE, f"{dag_id}:{airflow_run_id}:eventbrite:{city}")
+        """Open or reset one deterministic source/market run for an Airflow execution."""
+        run_id = uuid.uuid5(RUN_NAMESPACE, f"{dag_id}:{airflow_run_id}:{source}:{market_id}")
         with psycopg.connect(self._database_url) as connection:
             connection.execute(
                 """
                 INSERT INTO ingest.run (
-                    id, run_date, source, source_url, city_searched, market_id, categories,
+                    id, run_date, source, source_url, market_id, categories,
                     window_start, window_end, started_at, finished_at, status,
                     listing_appearances, events_found, detail_fetched, detail_cached,
                     events_new, events_updated, events_deduped, events_rejected_online,
                     error_message, airflow_dag_id, airflow_run_id
                 ) VALUES (
-                    %(id)s, %(run_date)s, 'eventbrite', %(source_url)s, %(city)s,
+                    %(id)s, %(run_date)s, %(source)s, %(source_url)s,
                     %(market_id)s, %(categories)s, %(window_start)s, %(window_end)s, %(started_at)s,
                     NULL, 'running', 0, 0, 0, 0, 0, 0, 0, 0, NULL,
                     %(dag_id)s, %(airflow_run_id)s
@@ -111,7 +114,6 @@ class IngestionRepository:
                 ON CONFLICT (id) DO UPDATE SET
                     run_date = EXCLUDED.run_date,
                     source_url = EXCLUDED.source_url,
-                    city_searched = EXCLUDED.city_searched,
                     market_id = EXCLUDED.market_id,
                     categories = EXCLUDED.categories,
                     window_start = EXCLUDED.window_start,
@@ -132,8 +134,8 @@ class IngestionRepository:
                 {
                     "id": run_id,
                     "run_date": started_at.date(),
+                    "source": source,
                     "source_url": source_url,
-                    "city": city,
                     "market_id": market_id,
                     "categories": list(categories),
                     "window_start": window_start,
@@ -149,11 +151,17 @@ class IngestionRepository:
         self,
         *,
         run_id: uuid.UUID,
-        page: EventbriteListingPage,
+        page: EventbriteListingPage | MeetupListingPage,
         fetched_at: datetime,
     ) -> None:
         """Persist public listing-page metadata without staging listing-card payloads."""
-        fetch_id = uuid.uuid5(PAGE_FETCH_NAMESPACE, f"{run_id}:{page.url}")
+        fetch_id = uuid.uuid5(
+            PAGE_FETCH_NAMESPACE,
+            (
+                f"{run_id}:{page.crawl_target_id}:{page.search_target}:"
+                f"{page.page_number}:{page.url}"
+            ),
+        )
         with psycopg.connect(self._database_url) as connection:
             connection.execute(
                 """
@@ -195,6 +203,7 @@ class IngestionRepository:
         run_id: uuid.UUID,
         page: FetchedPage,
         seen_at: datetime,
+        source: str = "eventbrite",
     ) -> int:
         """Atomically record fetch metadata and stage every raw event from the page."""
         fetch_id = uuid.uuid5(PAGE_FETCH_NAMESPACE, f"{run_id}:{page.url}")
@@ -226,8 +235,8 @@ class IngestionRepository:
                 },
             )
             for payload in page.events:
-                source_event_id, url = staging_identity(payload)
-                listing_id = uuid.uuid5(LISTING_NAMESPACE, source_event_id)
+                source_event_id, url = source_identity(source, payload)
+                listing_id = uuid.uuid5(LISTING_NAMESPACE, f"{source}:{source_event_id}")
                 connection.execute(
                     """
                     INSERT INTO source_listing (
@@ -235,7 +244,7 @@ class IngestionRepository:
                         registration_url, raw_payload, ingestion_run_id,
                         first_seen_at, last_seen_at
                     ) VALUES (
-                        %(id)s, NULL, 'eventbrite', %(source_event_id)s, %(url)s,
+                        %(id)s, NULL, %(source)s, %(source_event_id)s, %(url)s,
                         %(url)s, %(raw_payload)s, %(run_id)s, %(seen_at)s, %(seen_at)s
                     )
                     ON CONFLICT (source, source_event_id) DO UPDATE SET
@@ -247,6 +256,7 @@ class IngestionRepository:
                     """,
                     {
                         "id": listing_id,
+                        "source": source,
                         "source_event_id": source_event_id,
                         "url": url,
                         "raw_payload": Jsonb(payload),
@@ -319,8 +329,21 @@ class IngestionRepository:
         seen_at: datetime,
     ) -> None:
         """Stage one full detail payload after exact crawl-level id deduplication."""
-        source_event_id, url = staging_identity(payload)
-        listing_id = uuid.uuid5(LISTING_NAMESPACE, source_event_id)
+        self.stage_source_payload(
+            source="eventbrite", run_id=run_id, payload=payload, seen_at=seen_at
+        )
+
+    def stage_source_payload(
+        self,
+        *,
+        source: str,
+        run_id: uuid.UUID,
+        payload: dict[str, object],
+        seen_at: datetime,
+    ) -> None:
+        """Stage one source payload after exact crawl-level id deduplication."""
+        source_event_id, url = source_identity(source, payload)
+        listing_id = uuid.uuid5(LISTING_NAMESPACE, f"{source}:{source_event_id}")
         with psycopg.connect(self._database_url) as connection:
             connection.execute(
                 """
@@ -329,7 +352,7 @@ class IngestionRepository:
                     registration_url, raw_payload, ingestion_run_id,
                     first_seen_at, last_seen_at
                 ) VALUES (
-                    %(id)s, NULL, 'eventbrite', %(source_event_id)s, %(url)s,
+                    %(id)s, NULL, %(source)s, %(source_event_id)s, %(url)s,
                     %(url)s, %(raw_payload)s, %(run_id)s, %(seen_at)s, %(seen_at)s
                 )
                 ON CONFLICT (source, source_event_id) DO UPDATE SET
@@ -341,6 +364,7 @@ class IngestionRepository:
                 """,
                 {
                     "id": listing_id,
+                    "source": source,
                     "source_event_id": source_event_id,
                     "url": url,
                     "raw_payload": Jsonb(payload),
@@ -349,17 +373,19 @@ class IngestionRepository:
                 },
             )
 
-    def staged_payloads(self, run_id: uuid.UUID) -> tuple[dict[str, object], ...]:
-        """Load the raw Eventbrite payloads staged by one run."""
+    def staged_payloads(
+        self, run_id: uuid.UUID, *, source: str = "eventbrite"
+    ) -> tuple[dict[str, object], ...]:
+        """Load raw payloads staged by one source run."""
         with psycopg.connect(self._database_url) as connection:
             rows = connection.execute(
                 """
                 SELECT raw_payload
                 FROM source_listing
-                WHERE source = 'eventbrite' AND ingestion_run_id = %(run_id)s
+                WHERE source = %(source)s AND ingestion_run_id = %(run_id)s
                 ORDER BY source_event_id
                 """,
-                {"run_id": run_id},
+                {"run_id": run_id, "source": source},
             ).fetchall()
         payloads: list[dict[str, object]] = []
         for (raw_payload,) in rows:
@@ -370,6 +396,22 @@ class IngestionRepository:
             payloads.append(cast(dict[str, object], raw_payload))
         return tuple(payloads)
 
+    def run_market_timezone(self, run_id: uuid.UUID) -> str:
+        """Return the canonical market timezone attached to a source run."""
+        with psycopg.connect(self._database_url) as connection:
+            row = connection.execute(
+                """
+                SELECT market.timezone
+                FROM ingest.run AS run
+                JOIN ingest.market AS market ON market.id = run.market_id
+                WHERE run.id = %(run_id)s
+                """,
+                {"run_id": run_id},
+            ).fetchone()
+        if row is None or not isinstance(row[0], str):
+            raise LookupError(f"ingest.run {run_id} has no canonical market timezone")
+        return row[0]
+
     def reject_staged_listing(
         self,
         *,
@@ -377,11 +419,12 @@ class IngestionRepository:
         payload: dict[str, object],
         reason: str,
         rejected_at: datetime,
+        source: str = "eventbrite",
     ) -> None:
         """Log a rejection, removing new work or archiving an already-linked event."""
-        source_event_id, url = staging_identity(payload)
+        source_event_id, url = source_identity(source, payload)
         rejection_id = uuid.uuid5(
-            REJECTION_NAMESPACE, f"{run_id}:eventbrite:{source_event_id}:{reason}"
+            REJECTION_NAMESPACE, f"{run_id}:{source}:{source_event_id}:{reason}"
         )
         with psycopg.connect(self._database_url) as connection:
             connection.execute(
@@ -390,7 +433,7 @@ class IngestionRepository:
                     id, run_id, source, source_event_id, url, reason,
                     raw_payload, rejected_at
                 ) VALUES (
-                    %(id)s, %(run_id)s, 'eventbrite', %(source_event_id)s, %(url)s,
+                    %(id)s, %(run_id)s, %(source)s, %(source_event_id)s, %(url)s,
                     %(reason)s, %(raw_payload)s, %(rejected_at)s
                 )
                 ON CONFLICT (id) DO UPDATE SET
@@ -402,6 +445,7 @@ class IngestionRepository:
                 {
                     "id": rejection_id,
                     "run_id": run_id,
+                    "source": source,
                     "source_event_id": source_event_id,
                     "url": url,
                     "reason": reason,
@@ -412,11 +456,11 @@ class IngestionRepository:
             deleted = connection.execute(
                 """
                 DELETE FROM source_listing
-                WHERE source = 'eventbrite'
+                WHERE source = %(source)s
                   AND source_event_id = %(source_event_id)s
                   AND canonical_event_id IS NULL
                 """,
-                {"source_event_id": source_event_id},
+                {"source": source, "source_event_id": source_event_id},
             )
             if deleted.rowcount == 0:
                 connection.execute(
@@ -425,12 +469,13 @@ class IngestionRepository:
                     SET archived_at = %(rejected_at)s,
                         updated_at = %(rejected_at)s
                     FROM source_listing AS listing
-                    WHERE listing.source = 'eventbrite'
+                    WHERE listing.source = %(source)s
                       AND listing.source_event_id = %(source_event_id)s
                       AND listing.canonical_event_id = event.id
                     """,
                     {
                         "source_event_id": source_event_id,
+                        "source": source,
                         "rejected_at": rejected_at,
                     },
                 )

@@ -106,17 +106,21 @@ DAG, which is why restore means re-running a DAG rather than a backup restore, a
 ## Where things stand
 
 Run `git log --oneline -20` rather than trusting any status line in a document — including
-this one. As of writing, the project was on `phase-3-search` with 3a, 3b and 3c committed,
-and `ingest.market` / `ingest.crawl_target` (2f) had landed. Sub-phase boundaries are not
-readable from commit subjects: 3a and 3b arrived in one commit that also rewrote
-`AGENTS.md`. Read diffs, not subjects.
+this one. As of writing, phases 1 to 3 were merged to `main` and the project was on
+`phase-4-dedup` with 4a, 4b and 4c committed. Sub-phase boundaries are not readable from
+commit subjects: 3a and 3b arrived in one commit that also rewrote `AGENTS.md`. Read diffs,
+not subjects.
 
-§14 lists five open questions. The timezone question was answered by implementation and
-moved to §13. Two of the remaining five are load-bearing and should be settled before the
-sub-phase that depends on them:
+Two things worth knowing about that history. **3g was never built** and phase 3 merged
+anyway — the documents now say so in §11, §7 and §8, and `CONTRIBUTING.md`'s end-of-phase
+check was changed to look at every sub-phase rather than only the *Done when* line. And **4b
+was redefined after being committed**: it provisioned Qdrant, then §13 replaced Qdrant with
+pgvector, so the committed 4b is retired rather than built on. Expect the code to lag those
+documents until 4b is redone.
 
-- **Recurring events** (one canonical with a recurrence rule, or one per occurrence) —
-  changes the dedup time-window logic. Settle before 4d.
+§14 lists four open questions. The timezone and recurring-event questions were both answered
+and moved to §13. One of the remaining four is load-bearing:
+
 - **Push cold-start** (the relevance floor needs RSVP history that new users don't have) —
   settle before 7f.
 

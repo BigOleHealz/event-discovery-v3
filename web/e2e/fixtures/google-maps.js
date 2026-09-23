@@ -123,7 +123,7 @@
     }
 
     getZoom() {
-      return this.options.zoom;
+      return window.fixtureMapZoom ?? this.options.zoom;
     }
 
     fitBounds() {

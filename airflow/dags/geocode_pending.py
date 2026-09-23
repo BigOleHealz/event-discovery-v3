@@ -59,6 +59,7 @@ def build_geocode_pending():
             "candidates": summary.candidates,
             "created": summary.created,
             "updated": summary.updated,
+            "deduped": summary.deduped,
             "unchanged": summary.unchanged,
             "awaiting_geocode": summary.awaiting_geocode,
         }

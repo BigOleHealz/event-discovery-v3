@@ -162,6 +162,78 @@ def test_events_are_valid_geojson_with_longitude_first(migrated_engine: sa.Engin
     assert science["properties"]["registration_links"] == []
 
 
+def test_canonical_pins_and_counts_with_one_registration_per_source(
+    migrated_engine: sa.Engine,
+) -> None:
+    merged, next_week, review = (uuid4() for _ in range(3))
+    with migrated_engine.begin() as connection:
+        for event_id, starts_at in (
+            (merged, "2026-09-01T23:00:00Z"),
+            (next_week, "2026-09-08T23:00:00Z"),
+            (review, "2026-09-01T23:30:00Z"),
+        ):
+            connection.execute(sa.text("""
+                INSERT INTO canonical_event (
+                    id, title, starts_at, timezone, location, primary_category
+                ) VALUES (:id, 'Tuesday jazz', :starts_at, 'America/New_York',
+                    ST_SetSRID(ST_MakePoint(-75.18, 39.96), 4326)::geography, 'dedup-fixture')
+            """), {"id": event_id, "starts_at": starts_at})
+        for event_id, source, url, registration_url, seen_at, state in (
+            (merged, "meetup", "https://meetup.test/show", None, "2026-08-28", "same"),
+            (merged, "eventbrite", "https://eventbrite.test/older",
+             "https://eventbrite.test/old-tickets", "2026-08-27", "distinct"),
+            (merged, "eventbrite", "https://eventbrite.test/show",
+             "https://eventbrite.test/tickets", "2026-08-28", "same"),
+            (merged, "eventbrite", "https://eventbrite.test/newer-no-tickets",
+             None, "2026-08-29", "same"),
+            (next_week, "eventbrite", "https://eventbrite.test/next-week",
+             None, "2026-08-28", "distinct"),
+            (review, "meetup", "https://meetup.test/review", None, "2026-08-28", "review"),
+        ):
+            connection.execute(sa.text("""
+                INSERT INTO source_listing (
+                    id, canonical_event_id, source, source_event_id, url,
+                    registration_url, raw_payload, ingestion_run_id, last_seen_at, dedup_state
+                ) VALUES (:id, :event, :source, :source_id, :url,
+                          :registration_url, '{}', :run, :seen_at, :state)
+            """), {
+                "id": uuid4(), "event": event_id, "source": source, "source_id": str(uuid4()),
+                "url": url, "registration_url": registration_url, "run": uuid4(),
+                "seen_at": seen_at, "state": state,
+            })
+
+    def override_connection() -> Iterator[Connection]:
+        with migrated_engine.connect() as connection:
+            yield connection
+
+    app.dependency_overrides[get_connection] = override_connection
+    app.dependency_overrides[utc_now] = lambda: datetime.fromisoformat("2026-08-27T12:00:00+00:00")
+    parameters = {"categories": "dedup-fixture", "north": 40, "south": 39,
+                  "east": -75, "west": -76}
+    try:
+        individual = anyio.run(request_events, app, {**parameters, "zoom": 13})
+        aggregate = anyio.run(request_events, app, {**parameters, "zoom": 12})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert individual.status_code == 200
+    assert len(individual.json()["features"]) == 3
+    features = {feature["id"]: feature for feature in individual.json()["features"]}
+    assert set(features) == {str(merged), str(next_week), str(review)}
+    assert features[str(merged)]["properties"]["registration_links"] == [
+        {"source": "eventbrite", "url": "https://eventbrite.test/tickets"},
+        {"source": "meetup", "url": "https://meetup.test/show"},
+    ]
+    assert features[str(next_week)]["properties"]["registration_links"] == [
+        {"source": "eventbrite", "url": "https://eventbrite.test/next-week"},
+    ]
+    assert features[str(review)]["properties"]["registration_links"] == [
+        {"source": "meetup", "url": "https://meetup.test/review"},
+    ]
+    assert aggregate.status_code == 200
+    assert sum(cell["properties"]["count"] for cell in aggregate.json()["features"]) == 3
+
+
 def test_bounding_box_includes_events_on_both_sides_of_a_state_line(
     migrated_engine: sa.Engine,
 ) -> None:
@@ -365,6 +437,7 @@ def test_event_filters_support_an_overnight_local_time_range(
             app,
             {
                 "categories": "overnight-fixture",
+                "starts_after": "2026-09-01T00:00:00Z",
                 "time_of_day_start": "22:00",
                 "time_of_day_end": "02:00",
             },

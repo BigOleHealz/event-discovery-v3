@@ -7,6 +7,28 @@
   text-rendering: optimizeLegibility;
 }
 
+.review-page { max-width: 1200px; margin: auto; padding: 2rem; }
+.review-header, .review-toolbar, .review-actions { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+.review-header { justify-content: space-between; }
+.review-toolbar { border-bottom: 1px solid #abb4a5; }
+.review-toolbar p { margin-right: auto; }
+.review-page button { padding: .75rem 1rem; border: 1px solid #53664e; border-radius: .5rem; background: #fffdf6; cursor: pointer; }
+.review-page button:disabled { opacity: .5; cursor: wait; }
+.review-page :focus-visible { outline: 3px solid #527245; outline-offset: 3px; }
+.review-login { max-width: 28rem; display: grid; gap: 1rem; margin-top: 3rem; }
+.review-login input { padding: .75rem; min-width: 0; }
+.review-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.5rem; }
+.review-listing { background: #fffdf6; padding: 1.5rem; border: 1px solid #c2c8b9; border-radius: 1rem; overflow-wrap: anywhere; }
+.review-description { white-space: pre-wrap; }
+.review-muted { color: #52614c; font-size: .9rem; }
+.review-actions { margin-top: 1.5rem; }
+.review-actions button:first-child { background: #263f2b; color: white; }
+.review-error { padding: 1rem; border: 1px solid #a03823; background: #fff1e8; }
+@media (max-width: 680px) {
+  .review-page { padding: 1rem; }
+  .review-pair { grid-template-columns: 1fr; }
+}
+
 * {
   box-sizing: border-box;
 }

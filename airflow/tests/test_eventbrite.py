@@ -15,6 +15,7 @@ from ingestion.eventbrite import (
     ApiEventDetailFetcher,
     EventbriteConfig,
     EventbriteConfigurationError,
+    EventbriteEventUnavailable,
     EventbriteListingClient,
     EventbriteParseError,
     JsonLdEventDetailFetcher,
@@ -133,6 +134,78 @@ def test_pagination_stops_after_an_empty_page() -> None:
     assert pages[1].event_references == ()
 
 
+def test_crawl_accepts_captured_localized_url_and_continues_pagination() -> None:
+    requested_pages: list[str] = []
+    fixture = FIXTURE_DIRECTORY / "public_listing_localized_url_excerpt.html"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = request.url.params["page"]
+        requested_pages.append(page)
+        content = fixture.read_bytes() if page == "1" else listing_document([])
+        return httpx.Response(200, content=content, request=request)
+
+    with EventbriteListingClient(config(), transport=httpx.MockTransport(handler)) as client:
+        pages = tuple(client.iter_listing_pages(target("food-and-drink")))
+
+    assert requested_pages == ["1", "2"]
+    assert len(pages[0].event_references) == 20
+    localized = next(
+        item for item in pages[0].event_references if item.event_id == "1996990336855"
+    )
+    assert localized.canonical_url == (
+        "https://www.eventbrite.co.uk/e/apt-2c-a-dining-experience-tickets-1996990336855"
+    )
+    assert pages[1].event_references == ()
+
+
+@pytest.mark.parametrize("url,canonical", [
+    ("https://www.eventbrite.co.uk/e/show-tickets-123?aff=search#tickets",
+     "https://www.eventbrite.co.uk/e/show-tickets-123"),
+    ("https://www.eventbrite.ca/e/show-registration-123/?aff=search&amp;x=1",
+     "https://www.eventbrite.ca/e/show-registration-123/"),
+    ("/e/show-123?aff=search", "https://www.eventbrite.com/e/show-123"),
+])
+def test_listing_parser_extracts_identity_from_path(url: str, canonical: str) -> None:
+    data = {"search_data": {"events": {"results": [{"id": "123", "url": url}]}}}
+    document = f"<script>window.__SERVER_DATA__ = {json.dumps(data)};</script>".encode()
+    references = parse_listing_event_references(document, web_base_url="https://www.eventbrite.com")
+    assert len(references) == 1
+    assert references[0].event_id == "123"
+    assert references[0].canonical_url == canonical
+
+
+@pytest.mark.parametrize("url,message", [
+    ("https://www.eventbrite.co.uk/e/show-456", "id 123 does not match URL id 456"),
+    ("https://www.eventbrite.com/e/show?redirect=/e/show-123", "123 URL has no event id"),
+    ("https://www.eventbrite.com/e/show-123-extra", "123 URL has no event id"),
+    ("javascript:/e/show-123", "123 URL must be HTTP(S)"),
+    ("https://[broken/e/show-123", "Invalid IPv6 URL"),
+])
+def test_listing_parser_skips_bad_links_without_losing_valid_results(
+    url: str, message: str,
+) -> None:
+    data = {"search_data": {"events": {"results": [
+        {"id": "123", "url": url},
+        {"id": "789", "url": "https://www.eventbrite.com/e/valid-show-789"},
+    ]}}}
+    document = f"<script>window.__SERVER_DATA__ = {json.dumps(data)};</script>".encode()
+    with patch("ingestion.eventbrite.LOGGER.warning") as warning:
+        references = parse_listing_event_references(
+            document, web_base_url="https://www.eventbrite.com",
+        )
+    assert [reference.event_id for reference in references] == ["789"]
+    warning.assert_called_once()
+    assert warning.call_args.args[0] == "Skipping Eventbrite listing result: %s"
+    assert message in str(warning.call_args.args[1])
+
+
+def test_listing_parser_still_rejects_a_broken_page() -> None:
+    with pytest.raises(EventbriteParseError, match="missing __SERVER_DATA__"):
+        parse_listing_event_references(
+            b"<html>Unavailable</html>", web_base_url=config().web_base_url,
+        )
+
+
 def test_pagination_stops_when_the_previous_page_id_set_repeats() -> None:
     requested_pages: list[str] = []
 
@@ -206,6 +279,31 @@ def test_rate_limit_header_reports_remaining_quota() -> None:
     assert quota is not None
     assert quota.remaining == 1998
     assert quota.reset_seconds == 2625
+
+
+@pytest.mark.parametrize("status_code", [401, 500, 503])
+def test_detail_authentication_and_server_errors_are_not_skipped(status_code: int) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code)
+
+    with ApiEventDetailFetcher(config(), transport=httpx.MockTransport(handler)) as fetcher:
+        with pytest.raises(httpx.HTTPStatusError):
+            fetcher.fetch_event_detail("123")
+
+
+def test_unavailable_detail_still_updates_quota_pacing() -> None:
+    sleeps: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, headers={"X-Rate-Limit": "token:test 9/10 reset=2s"})
+
+    with ApiEventDetailFetcher(
+        config(), transport=httpx.MockTransport(handler), sleeper=sleeps.append,
+    ) as fetcher:
+        for event_id in ("123", "456"):
+            with pytest.raises(EventbriteEventUnavailable):
+                fetcher.fetch_event_detail(event_id)
+    assert sleeps == [2.0]
 
 
 def test_json_ld_detail_fetcher_is_an_explicit_stub() -> None:

@@ -77,9 +77,9 @@ def stage_event(database_url: str) -> None:
     run_id = repository.open_run(
         dag_id="ingest_eventbrite",
         airflow_run_id="geocoding-test-run",
+        source="eventbrite",
         source_url="https://eventbrite.test/v3/organizations/recorded/events/",
         market_id=uuid.UUID("8a7a04d3-7fb6-4cdb-a3d7-e5f08cf48bed"),
-        city="Philadelphia",
         started_at=FROZEN_TIME,
     )
     fetch_and_stage(

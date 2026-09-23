@@ -1,0 +1,43 @@
+{
+  "data": {
+    "eventSearch": {
+      "pageInfo": {
+        "endCursor": "meetup-cursor-1",
+        "hasNextPage": false
+      },
+      "edges": [
+        {
+          "node": {
+            "id": "305912103",
+            "title": "Go Hard",
+            "description": "A live Philadelphia technology community show.",
+            "eventUrl": "https://www.meetup.com/philly-technology/events/305912103/",
+            "dateTime": "2026-10-06T10:00:00-04:00",
+            "endTime": "2026-10-06T12:00:00-04:00",
+            "eventType": "PHYSICAL",
+            "venue": {
+              "id": "venue-100",
+              "name": "Philadelphia City Hall",
+              "address": "1400 John F Kennedy Boulevard",
+              "city": "Philadelphia",
+              "state": "PA",
+              "country": "US",
+              "postalCode": "19107",
+              "lat": 39.9528,
+              "lon": -75.1634833
+            },
+            "topics": {
+              "edges": [
+                {
+                  "node": {
+                    "name": "Technology"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

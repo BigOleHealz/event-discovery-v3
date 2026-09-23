@@ -12,6 +12,8 @@ until alembic upgrade head; do
   sleep "$API_DB_STARTUP_RETRY_SECONDS"
 done
 
+python -m app.review_admin
+
 if [ "${SEED_DATABASE:-false}" = "true" ]; then
   python -m app.seed
 fi

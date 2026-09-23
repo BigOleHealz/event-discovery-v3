@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from app.dedup_review import router as review_router
 from app.events import router as events_router
 
 
@@ -22,11 +23,12 @@ if allowed_origins:
         CORSMiddleware,
         allow_origins=allowed_origins,
         allow_credentials=False,
-        allow_methods=["GET"],
+        allow_methods=["GET", "POST"],
         allow_headers=["*"],
     )
 
 app.include_router(events_router)
+app.include_router(review_router)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])
