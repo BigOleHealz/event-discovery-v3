@@ -15,6 +15,11 @@ x-airflow-common: &airflow-common
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${AIRFLOW_DB}
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
     EVENT_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+    NEO4J_URI: ${NEO4J_URI}
+    NEO4J_DATABASE: ${NEO4J_DATABASE}
+    NEO4J_USER: ${NEO4J_USER}
+    NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+    NEO4J_PROJECTION_DAG_SCHEDULE: ${NEO4J_PROJECTION_DAG_SCHEDULE:-30 * * * *}
     EVENTBRITE_API_BASE_URL: ${EVENTBRITE_API_BASE_URL}
     EVENTBRITE_API_TOKEN: ${EVENTBRITE_API_TOKEN}
     EVENTBRITE_DAG_SCHEDULE: ${EVENTBRITE_DAG_SCHEDULE}
@@ -45,6 +50,29 @@ x-airflow-common: &airflow-common
   restart: unless-stopped
 
 services:
+  neo4j:
+    image: ${NEO4J_IMAGE:-neo4j:5.26-community}
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
+      GRAPH_USER: ${NEO4J_USER}
+      GRAPH_PASSWORD: ${NEO4J_PASSWORD}
+      GRAPH_DATABASE: ${NEO4J_DATABASE}
+      NEO4J_initial_dbms_default__database: ${NEO4J_DATABASE}
+    ports:
+      - "${NEO4J_BIND_ADDRESS}:${NEO4J_HTTP_EXTERNAL_PORT}:7474"
+      - "${NEO4J_BIND_ADDRESS}:${NEO4J_BOLT_EXTERNAL_PORT}:7687"
+    volumes:
+      - neo4jdata:/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'cypher-shell -a bolt://localhost:7687 -u "$$GRAPH_USER" -p "$$GRAPH_PASSWORD" -d "$$GRAPH_DATABASE" "RETURN 1"'
+      interval: 10s
+      timeout: 10s
+      retries: 18
+      start_period: 30s
+    restart: unless-stopped
+
   postgres:
     build: ./postgres
     image: event-discovery-postgres:16-3.4-vector-0.8.6
@@ -122,6 +150,8 @@ services:
     <<: *airflow-common
     command: scheduler
     depends_on:
+      neo4j:
+        condition: service_healthy
       airflow-api-server:
         condition: service_healthy
       airflow-init:
@@ -227,3 +257,4 @@ services:
 volumes:
   airflow_logs: {}
   pgdata: {}
+  neo4jdata: {}
