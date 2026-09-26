@@ -478,3 +478,62 @@ a {
     animation: none;
   }
 }
+
+.offline-banner {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  left: 0;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 1rem;
+  padding: .8rem 1rem;
+  color: #422d0d;
+  background: #ffe5a5;
+  text-align: center;
+  font-weight: 750;
+}
+
+.offline-banner button, .map-status button {
+  border: 1px solid currentColor;
+  border-radius: .4rem;
+  padding: .3rem .5rem;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+.map-status button { margin-left: .75rem; }
+.map-stage:has(.offline-banner) { padding-top: 5rem; }
+.app-shell:has(.offline-banner) .brand-card,
+.map-stage:has(.offline-banner) .event-detail { margin-top: 5rem; }
+.map-stage:has(.offline-banner) .filter-sidebar { margin-top: 5rem; }
+
+.offline-events {
+  position: absolute;
+  top: 7rem;
+  right: 2rem;
+  width: min(30rem, calc(100vw - 30rem));
+  max-height: 75vh;
+  overflow-y: auto;
+  padding: 1.25rem;
+  border-radius: 1rem;
+  background: #fffdf7;
+}
+.offline-events button {
+  display: block;
+  width: 100%;
+  padding: .8rem;
+  margin-block: .5rem;
+  text-align: left;
+  cursor: pointer;
+}
+@media (max-width: 900px) {
+  .map-stage:has(.offline-events) { display: flex; flex-direction: column; padding: 14rem 1rem 2rem; }
+  .map-stage:has(.offline-events) .map-canvas { display: none; }
+  .map-stage:has(.offline-events) .filter-sidebar,
+  .offline-events { position: static; width: 100%; max-height: none; margin: 1rem 0; }
+  .map-stage:has(.offline-events) .filter-sidebar { order: 1; }
+  .map-stage:has(.offline-events) .map-status { position: static; order: 2; margin-top: 1rem; }
+}

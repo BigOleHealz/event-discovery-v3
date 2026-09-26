@@ -58,5 +58,17 @@ test("admin reviews real pairs: merge, distinct, skip, and persisted decisions",
   await page.getByLabel("Admin token").fill(token);
   await page.getByRole("button", { name: "Unlock", exact: true }).click();
   await expect(page.getByText(/all caught up/)).toBeVisible();
+  // Successful review reads and decisions must never enter any runtime cache.
+  const cachedRequests = await page.evaluate(async () => {
+    const requests: string[] = [];
+    for (const name of await caches.keys()) {
+      for (const request of await (await caches.open(name)).keys()) {
+        requests.push(`${request.url} ${request.headers.get("Authorization") ?? ""}`);
+      }
+    }
+    return requests.join("\n");
+  });
+  expect(cachedRequests).not.toContain("/api/admin/");
+  expect(cachedRequests).not.toContain(token);
   expect(errors).toEqual([]);
 });

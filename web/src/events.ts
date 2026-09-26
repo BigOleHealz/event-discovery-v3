@@ -178,7 +178,7 @@ export async function fetchEvents(
   signal: AbortSignal,
   viewport?: EventViewport,
   filters?: EventFilters,
-): Promise<EventMapFeature[]> {
+): Promise<EventResult> {
   const endpoint = `${apiBaseUrl.replace(/\/$/, "")}/api/events`;
   const url = new URL(endpoint, window.location.href);
   if (viewport !== undefined) {
@@ -205,14 +205,92 @@ export async function fetchEvents(
       url.searchParams.set("categories", filters.categories.join(","));
     }
   }
-  const response = await fetch(url, { signal });
+  let response: Response;
+  let payload: unknown;
+  try {
+    // Public event data never carries cookies or authorization into storage.
+    response = await fetch(url, { signal, credentials: "omit", cache: "no-store" });
+    if (response.ok) payload = await response.json();
+  } catch (reason: unknown) {
+    signal.throwIfAborted();
+    // Malformed JSON is a server error, not evidence of lost connectivity.
+    if (reason instanceof SyntaxError) throw reason;
+    const cached = await readCachedEvents(url);
+    signal.throwIfAborted();
+    if (cached !== null) {
+      return { features: cached.features, stale: true };
+    }
+    throw new Error("Offline or unavailable — no saved events for this viewport and filters.", {
+      cause: reason,
+    });
+  }
   if (!response.ok) {
     throw new Error(`Event request failed with status ${response.status}`);
   }
 
-  const payload: unknown = await response.json();
   if (!isEventMapFeatureCollection(payload)) {
     throw new Error("Event response is not a GeoJSON FeatureCollection");
   }
-  return payload.features;
+  signal.throwIfAborted();
+  try {
+    const cache = await caches.open(EVENT_CACHE_NAME);
+    // Persist validated public JSON only, not response headers or credentials.
+    await cache.put(url.href, new Response(JSON.stringify(payload), {
+      headers: { "Content-Type": "application/json" },
+    }));
+    const keys = await cache.keys();
+    for (const key of keys.slice(0, Math.max(0, keys.length - 50))) {
+      await cache.delete(key);
+    }
+  } catch {
+    // Quota, private browsing, or unavailable storage must not break live results.
+  }
+  signal.throwIfAborted();
+  return { features: payload.features, stale: false };
+}
+
+// Increment when the public event schema changes. The shell has its own Workbox cache.
+export const EVENT_CACHE_NAME = "event-discovery-events-v1";
+
+export interface EventResult {
+  features: EventMapFeature[];
+  stale: boolean;
+}
+
+async function readCachedEvents(url: URL): Promise<EventMapFeatureCollection | null> {
+  try {
+    const cache = await caches.open(EVENT_CACHE_NAME);
+    const response = await cache.match(url.href);
+    if (response === undefined) return null;
+    const payload: unknown = await response.json();
+    return isEventMapFeatureCollection(payload) ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+function viewportKey(apiBaseUrl: string): string {
+  return `event-discovery-viewport-v1:${new URL(apiBaseUrl, window.location.href).href}`;
+}
+
+export function savedViewport(apiBaseUrl: string): EventViewport | undefined {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(viewportKey(apiBaseUrl)) ?? "null");
+    if (isRecord(value) && ["north", "south", "east", "west", "zoom"].every(
+      (key) => typeof value[key] === "number" && Number.isFinite(value[key]),
+    )) {
+      return value as unknown as EventViewport;
+    }
+  } catch {
+    // Storage may be unavailable or contain an old/invalid value.
+  }
+  return undefined;
+}
+
+export function rememberViewport(apiBaseUrl: string, viewport: EventViewport): void {
+  try {
+    localStorage.setItem(viewportKey(apiBaseUrl), JSON.stringify(viewport));
+  } catch {
+    // Remembering bounds is best effort; no event data is stored here.
+  }
 }
