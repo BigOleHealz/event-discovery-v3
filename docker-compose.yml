@@ -15,6 +15,8 @@ x-airflow-common: &airflow-common
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${AIRFLOW_DB}
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
     EVENT_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+    STAGEHAND_BASE_URL: ${STAGEHAND_BASE_URL:-http://stagehand:8081}
+    STAGEHAND_API_TOKEN: ${STAGEHAND_API_TOKEN:-}
     NEO4J_URI: ${NEO4J_URI}
     NEO4J_DATABASE: ${NEO4J_DATABASE}
     NEO4J_USER: ${NEO4J_USER}
@@ -50,6 +52,33 @@ x-airflow-common: &airflow-common
   restart: unless-stopped
 
 services:
+  stagehand:
+    build: ./stagehand
+    init: true
+    environment:
+      STAGEHAND_HOST: ${STAGEHAND_HOST:-0.0.0.0}
+      STAGEHAND_PORT: ${STAGEHAND_PORT:-8081}
+      STAGEHAND_API_TOKEN: ${STAGEHAND_API_TOKEN:-}
+      STAGEHAND_BROWSER_EXECUTABLE: ${STAGEHAND_BROWSER_EXECUTABLE:-/usr/bin/chromium}
+      STAGEHAND_BROWSER_SANDBOX: ${STAGEHAND_BROWSER_SANDBOX:-false}
+      STAGEHAND_FETCH_TIMEOUT_MS: ${STAGEHAND_FETCH_TIMEOUT_MS:-30000}
+      STAGEHAND_MAX_CONCURRENCY: ${STAGEHAND_MAX_CONCURRENCY:-2}
+      STAGEHAND_MAX_HTML_BYTES: ${STAGEHAND_MAX_HTML_BYTES:-5000000}
+    # Internal HTTP only; no host port or browser-debugging port is published.
+    shm_size: 512mb
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:' + process.env.STAGEHAND_PORT + '/health', {signal: AbortSignal.timeout(2000)}).then(r => {if (!r.ok) process.exit(1)}).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+    stop_grace_period: 90s
+    restart: unless-stopped
+
   neo4j:
     image: ${NEO4J_IMAGE:-neo4j:5.26-community}
     environment:

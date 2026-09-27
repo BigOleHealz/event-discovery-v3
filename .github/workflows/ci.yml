@@ -104,6 +104,15 @@ jobs:
         working-directory: airflow
         run: pytest
 
+  stagehand:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify isolated Stagehand service with offline browser fixtures
+        run: bash tests/phase8a-compose.sh
+
   e2e:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
