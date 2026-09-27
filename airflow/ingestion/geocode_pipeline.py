@@ -51,6 +51,11 @@ def geocode_pending(
             result = geocoder.geocode(representative.address)
         except GeocodingNotFound:
             for listing in listings:
+                ingestion_repository.invalidate_site_plan(
+                    source=listing.source,
+                    run_id=listing.ingestion_run_id,
+                    payload=listing.payload,
+                )
                 ingestion_repository.reject_staged_listing(
                     run_id=listing.ingestion_run_id,
                     payload=listing.payload,

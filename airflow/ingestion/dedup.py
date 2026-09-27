@@ -62,7 +62,7 @@ def dedup_pending(
     database_url: str,
     *,
     clock: Clock,
-    source_priority: tuple[str, ...] = ("eventbrite", "meetup"),
+    source_priority: tuple[str, ...] | None = None,
 ) -> dict[str, int]:
     """Resolve pending rows atomically, retaining separate canonicals for review.
 
@@ -73,6 +73,11 @@ def dedup_pending(
     counts = {"same": 0, "review": 0, "distinct": 0}
     url = database_url.replace("postgresql+psycopg://", "postgresql://", 1)
     with psycopg.connect(url) as connection:
+        if source_priority is None:
+            source_priority = tuple(row[0] for row in connection.execute(
+                "SELECT source FROM ingest.source_adapter ORDER BY priority, source"
+            ).fetchall())
+            connection.commit()  # Preserve the per-candidate transaction boundary below.
         while True:
             with connection.transaction():
                 connection.execute(

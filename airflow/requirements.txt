@@ -2,3 +2,5 @@ apache-airflow-providers-postgres>=7,<8
 httpx>=0.28,<1
 psycopg[binary]>=3.2,<4
 neo4j>=6.3,<7
+beautifulsoup4>=4.13,<5
+jsonschema>=4.25,<5

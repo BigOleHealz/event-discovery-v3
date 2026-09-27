@@ -60,7 +60,8 @@ class CanonicalEventRepository:
                 JOIN ingest.run AS run ON run.id = sl.ingestion_run_id
                 JOIN ingest.market AS market ON market.id = run.market_id
                 LEFT JOIN canonical_event AS event ON event.id = sl.canonical_event_id
-                WHERE sl.source IN ('eventbrite', 'meetup')
+                WHERE (sl.source IN ('eventbrite', 'meetup')
+                       OR sl.raw_payload->>'_format' = 'site-v1')
                   AND (
                     sl.canonical_event_id IS NULL
                     OR event.updated_at IS NULL

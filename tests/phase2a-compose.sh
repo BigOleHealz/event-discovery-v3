@@ -40,7 +40,7 @@ ingest_tables=$(
     --command "SELECT string_agg(tablename, ',' ORDER BY tablename) FROM pg_catalog.pg_tables WHERE schemaname = 'ingest'"
 )
 test "$ingest_tables" = \
-  "crawl_target,event_detail_cache,geocode_cache,market,page_fetch,rejected_listing,run"
+  "crawl_target,event_detail_cache,extraction_plan,geocode_cache,market,page_fetch,rejected_listing,run,site_page,source_adapter"
 
 crawl_targets=$(
   docker compose --env-file "$env_file" --file "$compose_file" exec --no-TTY postgres \

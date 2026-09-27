@@ -98,7 +98,6 @@ def review_engine(database_url: str, monkeypatch: pytest.MonkeyPatch) -> Iterato
         """), {"id": REVIEWER})
     monkeypatch.setenv("ADMIN_REVIEW_TOKEN", TOKEN)
     monkeypatch.setenv("ADMIN_REVIEW_USER_ID", str(REVIEWER))
-    monkeypatch.setenv("DEDUP_SOURCE_PRIORITY", "eventbrite,meetup")
 
     def connection() -> Iterator[sa.Connection]:
         with engine.connect() as conn:
@@ -263,7 +262,7 @@ def test_distinct_label_blocks_transitive_manual_merge(review_engine: sa.Engine)
 
 
 def test_merge_moves_entire_group_and_uses_configured_priority(
-    review_engine: sa.Engine, monkeypatch: pytest.MonkeyPatch,
+    review_engine: sa.Engine,
 ) -> None:
     a, b = seed_pair(review_engine)
     extra = uuid4()
@@ -273,7 +272,10 @@ def test_merge_moves_entire_group_and_uses_configured_priority(
                 id, canonical_event_id, source, source_event_id, url, raw_payload, ingestion_run_id
             ) VALUES (:id, :event, 'fixture', :source_id, 'https://fixture.test', '{}', :run)
         """), {"id": extra, "event": b, "source_id": str(extra), "run": uuid4()})
-    monkeypatch.setenv("DEDUP_SOURCE_PRIORITY", "meetup,eventbrite")
+    with review_engine.begin() as connection:
+        connection.execute(sa.text("""
+            UPDATE ingest.source_adapter SET priority = CASE source WHEN 'meetup' THEN 0 ELSE 1 END
+        """))
     pair = request().json()["pair"]
     assert request(f"/{pair['id']}/decision", {
         "status": "merged", "event_a_id": str(a), "event_b_id": str(b),

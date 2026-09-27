@@ -62,8 +62,8 @@ The synthetic site creates listings exclusively with JavaScript. Tests cover ren
 DOM, redirects, upstream errors, profile isolation, timeouts, size limits, cleanup,
 authentication, request validation, and capacity recovery. They need no model credentials.
 
-Phase 8b adds extraction configuration, the shared HTTP/browser extraction step, model
-and prompt provenance, validation, persistent derive/replay caching, pagination, and DAG
-integration through the existing pipeline. No inference or event parsing is implemented
-in 8a. Existing ordinary HTTP adapters continue unchanged. No source is enabled here;
-ToS review and per-source rate limiting must precede onboarding in the later sub-phases.
+Phase 8b's [site ingestion](site-ingestion.md) adds the shared extraction/cache pipeline
+and DAG integration. The worker also accepts an optional `steps` array for deterministic
+action pagination: each step has `selector`, `wait_for_selector`, and `delay_ms`. It waits,
+clicks, and verifies readiness, under the same overall fetch deadline. At most 20 steps
+are accepted. It still performs no model inference or event parsing itself.

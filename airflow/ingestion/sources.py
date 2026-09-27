@@ -14,6 +14,11 @@ def source_identity(source: str, payload: Mapping[str, object]) -> tuple[str, st
         return staging_identity(payload)
     if source == "meetup":
         return meetup_staging_identity(payload)
+    if payload.get("_format") == "site-v1":
+        from ingestion.site_models import site_event
+
+        listing = site_event(payload, market_timezone="UTC")
+        return listing.source_event_id, listing.url
     raise ValueError(f"unsupported ingestion source {source!r}")
 
 
@@ -27,4 +32,8 @@ def parse_source_listing(
         return parse_eventbrite_event(payload)
     if source == "meetup":
         return parse_meetup_event(payload, market_timezone=market_timezone)
+    if payload.get("_format") == "site-v1":
+        from ingestion.site_models import site_event
+
+        return site_event(payload, market_timezone=market_timezone)
     raise ValueError(f"unsupported ingestion source {source!r}")

@@ -10,6 +10,11 @@ const requestSchema = z.strictObject({
     return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password;
   }),
   ready_selector: z.string().min(1).max(1024).optional(),
+  steps: z.array(z.strictObject({
+    selector: z.string().min(1).max(1024),
+    wait_for_selector: z.string().min(1).max(1024),
+    delay_ms: z.number().int().min(1).max(3_600_000),
+  })).max(20).optional(),
 });
 
 export function createServer(config: Config, fetchPage: FetchPage) {

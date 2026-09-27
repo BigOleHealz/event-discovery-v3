@@ -1,0 +1,15 @@
+{
+  "status": "completed",
+  "model": "fixture-model-snapshot",
+  "output": [
+    {
+      "type": "message",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "{\"items\": \"article.event\", \"empty_selector\": \".no-events\", \"next_selector\": \"a.next, button.next\", \"fields\": {\"source_event_id\": {\"selector\": null, \"attribute\": \"data-id\", \"format\": null}, \"url\": {\"selector\": \"a\", \"attribute\": \"href\", \"format\": null}, \"title\": {\"selector\": \"h2\", \"attribute\": null, \"format\": null}, \"description\": null, \"starts_at\": {\"selector\": \"time\", \"attribute\": \"datetime\", \"format\": null}, \"ends_at\": null, \"venue_name\": null, \"venue_address\": {\"selector\": \"address\", \"attribute\": null, \"format\": null}, \"venue_city\": null, \"venue_region\": null, \"venue_country\": null}}"
+        }
+      ]
+    }
+  ]
+}

@@ -28,6 +28,9 @@ EXPECTED_TABLES = (
     "saved_search_hit",
 )
 EXPECTED_INGEST_TABLES = {
+    "source_adapter",
+    "extraction_plan",
+    "site_page",
     "crawl_target",
     "event_detail_cache",
     "run",

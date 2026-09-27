@@ -36,12 +36,7 @@ def build_dedup_pending() -> None:
 
     @task
     def resolve_listings() -> dict[str, int]:
-        priority = tuple(
-            source.strip()
-            for source in os.environ.get("DEDUP_SOURCE_PRIORITY", "eventbrite,meetup").split(",")
-            if source.strip()
-        )
-        return dedup_pending(database_url(), clock=utc_now, source_priority=priority)
+        return dedup_pending(database_url(), clock=utc_now)
 
     embed_listings() >> resolve_listings()
 

@@ -15,7 +15,7 @@ test("real Stagehand renders JS through HTTP, isolates profiles, and cleans up f
     if (request.url === "/hang") return;
     response.writeHead(request.url === "/missing" ? 404 : 200, { "content-type": "text/html" });
     response.end(`<!doctype html><html><head><title>Fixture events</title></head><body>
-      <main id="events"></main><script>
+      <main id="events"></main><button class="next" onclick="document.querySelector('main').dataset.page='2'">Next</button><script>
       const previous = localStorage.getItem("visited");
       localStorage.setItem("visited", "yes");
       setTimeout(() => {
@@ -64,5 +64,11 @@ test("real Stagehand renders JS through HTTP, isolates profiles, and cleans up f
   // Allow Chromium to launch before exercising a navigation deadline.
   await assert.rejects(createFetcher({ ...config, fetchTimeoutMs: 5000 }, launch)({ url: `${base}/hang` }), { message: "fetch_timeout" });
   assert.equal(closed, launched);
-  assert.equal(launched, 5);
+  const advanced = await createFetcher(config, launch)({
+    url: `${base}/events`, ready_selector: "article",
+    steps: [{ selector: "button.next", wait_for_selector: "main[data-page='2']", delay_ms: 1 }],
+  });
+  assert.match(advanced.html, /data-page="2"/);
+  assert.equal(closed, launched);
+  assert.equal(launched, 6);
 });

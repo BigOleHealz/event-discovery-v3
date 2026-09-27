@@ -1,0 +1,1 @@
+Synthetic deterministic site and model-response fixtures for Phase 8b. No live site was scraped and no model was called. The response records the declarative plan shape; the same fixture serves both the HTTP and rendered-browser substitutes. Real source captures belong to onboarding in 8c.

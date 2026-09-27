@@ -157,10 +157,7 @@ class IngestionRepository:
         """Persist public listing-page metadata without staging listing-card payloads."""
         fetch_id = uuid.uuid5(
             PAGE_FETCH_NAMESPACE,
-            (
-                f"{run_id}:{page.crawl_target_id}:{page.search_target}:"
-                f"{page.page_number}:{page.url}"
-            ),
+            (f"{run_id}:{page.crawl_target_id}:{page.search_target}:{page.page_number}:{page.url}"),
         )
         with psycopg.connect(self._database_url) as connection:
             connection.execute(
@@ -350,17 +347,20 @@ class IngestionRepository:
                 INSERT INTO source_listing (
                     id, canonical_event_id, source, source_event_id, url,
                     registration_url, raw_payload, ingestion_run_id,
-                    first_seen_at, last_seen_at
+                    first_seen_at, last_seen_at, extraction_model, extraction_prompt_version
                 ) VALUES (
                     %(id)s, NULL, %(source)s, %(source_event_id)s, %(url)s,
-                    %(url)s, %(raw_payload)s, %(run_id)s, %(seen_at)s, %(seen_at)s
+                    %(url)s, %(raw_payload)s, %(run_id)s, %(seen_at)s, %(seen_at)s,
+                    %(extraction_model)s, %(extraction_prompt_version)s
                 )
                 ON CONFLICT (source, source_event_id) DO UPDATE SET
                     url = EXCLUDED.url,
                     registration_url = EXCLUDED.registration_url,
                     raw_payload = EXCLUDED.raw_payload,
                     ingestion_run_id = EXCLUDED.ingestion_run_id,
-                    last_seen_at = EXCLUDED.last_seen_at
+                    last_seen_at = EXCLUDED.last_seen_at,
+                    extraction_model = EXCLUDED.extraction_model,
+                    extraction_prompt_version = EXCLUDED.extraction_prompt_version
                 """,
                 {
                     "id": listing_id,
@@ -370,7 +370,38 @@ class IngestionRepository:
                     "raw_payload": Jsonb(payload),
                     "run_id": run_id,
                     "seen_at": seen_at,
+                    "extraction_model": payload.get("extraction_model"),
+                    "extraction_prompt_version": payload.get("extraction_prompt_version"),
                 },
+            )
+
+    def invalidate_site_plan(
+        self,
+        *,
+        source: str,
+        run_id: uuid.UUID,
+        payload: dict[str, object],
+    ) -> None:
+        """Treat an ungeocodable extracted address as a persistent validation failure."""
+        if payload.get("_format") != "site-v1":
+            return
+        event_id, _ = source_identity(source, payload)
+        with psycopg.connect(self._database_url) as connection:
+            connection.execute(
+                """
+                DELETE FROM ingest.extraction_plan WHERE source=%s AND config_hash=%s
+            """,
+                (source, payload.get("extraction_config_hash")),
+            )
+            connection.execute(
+                """
+                UPDATE ingest.site_page page SET events=NULL,
+                    validation_failures=validation_failures+1
+                FROM ingest.page_fetch pf
+                WHERE pf.id=page.page_fetch_id AND pf.run_id=%s
+                  AND page.events @> %s::jsonb
+            """,
+                (run_id, Jsonb([{"source_event_id": event_id}])),
             )
 
     def staged_payloads(

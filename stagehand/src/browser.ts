@@ -4,6 +4,7 @@ import type { Config } from "./config.js";
 export interface FetchRequest {
   url: string;
   ready_selector?: string | undefined;
+  steps?: { selector: string; wait_for_selector: string; delay_ms: number }[] | undefined;
 }
 
 export interface FetchResult {
@@ -87,6 +88,13 @@ export function createFetcher(config: Config, launch = browserLauncher(config)):
             timeout: config.fetchTimeoutMs,
           });
           if (!ready) throw new FetchFailure("fetch_timeout");
+        }
+        for (const step of request.steps ?? []) {
+          await page.waitForTimeout(step.delay_ms);
+          await page.locator(step.selector).click();
+          if (!await page.waitForSelector(step.wait_for_selector, {
+            timeout: config.fetchTimeoutMs,
+          })) throw new FetchFailure("fetch_timeout");
         }
         const snapshot = await page.evaluate((maxBytes) => {
           const html = document.documentElement.outerHTML;
