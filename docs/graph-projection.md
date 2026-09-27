@@ -1,4 +1,4 @@
-# Graph projection (5a–5b)
+# Graph projection (5a–5c)
 
 Postgres owns all data. The configured Neo4j database is dedicated to this app's
 disposable projection: each rebuild replaces **all nodes and relationships**.
@@ -24,8 +24,9 @@ The projection includes:
 Nullable references create no edge. Null properties are absent in Neo4j. Times are
 UTC ISO strings, UUIDs are strings, coordinates are latitude/longitude floats,
 and prices are decimal strings to avoid losing precision. Raw payloads, vectors,
-and operational metadata remain exclusively in Postgres. Similarity edges belong
-to 5c; social nodes and edges belong to Phase 6.
+and operational metadata remain exclusively in Postgres. `SIMILAR_TO {score}`
+connects distinct canonical events using persisted dedup scores. Social nodes and
+edges belong to Phase 6.
 
 A Postgres session advisory lock serializes rebuilds, including manual callers.
 All reads share one repeatable-read snapshot. Neo4j constraints are recreated if
@@ -75,3 +76,25 @@ edges before using the hierarchy. The projection delay remains hourly by default
 From the repository root, `rtk proxy bash tests/phase1-e2e.sh` verifies parent and
 child selection through the real Compose API and Neo4j, alongside existing browser
 flows. Only Google Maps JavaScript is replaced with a recorded browser fixture.
+
+## Similar events (5c)
+
+`source_listing.dedup_match_id` and `dedup_similarity` are the evidence for each
+edge. Resolve both listings' current canonical IDs inside the same Postgres snapshot
+as the nodes. Store one edge per unordered canonical pair, oriented by UUID, with
+the highest recorded score. Unlinked listings, merged self-pairs, missing scores,
+and non-finite/out-of-range scores create no edge. All valid cosine scores in
+[-1, 1] are projected; rebuilds remove obsolete edges after a merge or deletion.
+This uses the best match retained by dedup, not new all-pairs embedding calls.
+
+`GET /api/events/{id}/similar` traverses edges in either direction and returns up
+to five positive-score neighbours, descending by score with UUID tie-breaking.
+Postgres supplies the current public details and registration links, filtering
+deleted, archived, and past events **before** limiting. These suggestions are
+independent of the current map filters. The panel can open a suggestion directly.
+
+Similar-event loading never blocks the selected event's existing details. Empty
+results have an explicit message; a graph outage or offline request offers retry,
+and reconnecting retries automatically. Recommendations are not cached. Category
+and viewport caches retain their existing behavior. Projection freshness remains
+hourly; rerun `project_to_neo4j` after deployment to populate similarity edges.

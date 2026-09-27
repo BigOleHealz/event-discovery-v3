@@ -31,8 +31,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Serialise the two database cold starts on smaller development machines.
 if ! docker compose --env-file "$env_file" --file "$compose_file" up \
-  --detach --build --wait postgres api web; then
+  --detach --build --wait postgres || \
+  ! docker compose --env-file "$env_file" --file "$compose_file" up \
+  --detach --build --wait api web; then
   docker compose --env-file "$env_file" --file "$compose_file" ps --all >&2
   docker compose --env-file "$env_file" --file "$compose_file" logs \
     --no-color --tail=200 postgres neo4j api web >&2
@@ -47,6 +50,9 @@ docker compose --env-file "$env_file" --file "$compose_file" exec --no-TTY postg
 docker compose --env-file "$env_file" --file "$compose_file" exec --no-TTY postgres \
   psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --set ON_ERROR_STOP=1 \
   < tests/phase5b-seed.sql
+docker compose --env-file "$env_file" --file "$compose_file" exec --no-TTY postgres \
+  psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --set ON_ERROR_STOP=1 \
+  < tests/phase5c-seed.sql
 docker compose --env-file "$env_file" --file "$compose_file" build airflow-scheduler
 docker compose --env-file "$env_file" --file "$compose_file" run --rm --no-deps \
   --entrypoint python airflow-scheduler -c \

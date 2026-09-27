@@ -89,6 +89,19 @@ EDGE_QUERIES = {
     """,
 }
 
+# Scores belong to listing pairs in Postgres. Resolve their current canonical IDs
+# on every rebuild so merges remove self-links and redirected pairs stay correct.
+SIMILARITY_QUERY = """
+    SELECT least(a.canonical_event_id, b.canonical_event_id) AS source,
+           greatest(a.canonical_event_id, b.canonical_event_id) AS target,
+           max(a.dedup_similarity) AS score
+    FROM source_listing a JOIN source_listing b ON b.id = a.dedup_match_id
+    WHERE a.canonical_event_id IS NOT NULL AND b.canonical_event_id IS NOT NULL
+      AND a.canonical_event_id <> b.canonical_event_id
+      AND a.dedup_similarity BETWEEN -1 AND 1
+    GROUP BY 1, 2 ORDER BY 1, 2
+"""
+
 
 @dataclass(frozen=True)
 class GraphConfig:
@@ -134,7 +147,7 @@ def _snapshot(connection: psycopg.Connection[tuple[object, ...]]) -> dict[str, l
                     {key: _property(value) for key, value in row.items()}
                     for row in cursor.execute(query).fetchall()
                 ]
-                for label, query in NODE_QUERIES.items()
+                for label, query in {**NODE_QUERIES, "SIMILAR_TO": SIMILARITY_QUERY}.items()
             }
 
 
@@ -143,7 +156,8 @@ def _replace_graph(
 ) -> dict[str, int]:
     transaction.run("MATCH (n) DETACH DELETE n").consume()
     counts = {}
-    for label, rows in snapshot.items():
+    for label in NODE_QUERIES:
+        rows = snapshot[label]
         for offset in range(0, len(rows), 500):
             transaction.run(
                 f"UNWIND $rows AS row CREATE (n:{label}) SET n = row",
@@ -152,6 +166,15 @@ def _replace_graph(
         counts[label] = len(rows)
     for relationship, query in EDGE_QUERIES.items():
         counts[relationship] = transaction.run(query).consume().counters.relationships_created
+    similarities = snapshot["SIMILAR_TO"]
+    counts["SIMILAR_TO"] = 0
+    for offset in range(0, len(similarities), 500):
+        counts["SIMILAR_TO"] += transaction.run(
+            """UNWIND $rows AS row
+               MATCH (a:CanonicalEvent {id: row.source}), (b:CanonicalEvent {id: row.target})
+               CREATE (a)-[:SIMILAR_TO {score: row.score}]->(b)""",
+            rows=similarities[offset:offset + 500],
+        ).consume().counters.relationships_created
     return counts
 
 

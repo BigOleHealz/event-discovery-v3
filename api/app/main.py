@@ -7,10 +7,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from app.categories import graph_driver
 from app.categories import router as categories_router
 from app.dedup_review import router as review_router
 from app.events import router as events_router
+from app.graph import graph_driver
+from app.similar_events import router as similar_events_router
 
 
 class HealthResponse(BaseModel):
@@ -40,6 +41,7 @@ if allowed_origins:
     )
 
 app.include_router(events_router)
+app.include_router(similar_events_router)
 app.include_router(categories_router)
 app.include_router(review_router)
 

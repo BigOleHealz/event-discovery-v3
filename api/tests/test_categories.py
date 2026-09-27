@@ -11,9 +11,9 @@ from ingestion.graph import GraphConfig, project_to_neo4j
 from neo4j import GraphDatabase
 from test_events import insert_spatial_event, migrated_engine  # noqa: F401
 
-from app.categories import graph_driver
 from app.clock import utc_now
 from app.database import get_connection
+from app.graph import graph_driver
 from app.main import app
 
 NOW = datetime(2026, 9, 26, 12, tzinfo=UTC)

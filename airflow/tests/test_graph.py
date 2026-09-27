@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -81,6 +82,12 @@ def seed_projection(database_url: str) -> None:
                  f"https://fixture.test/{number}", f"https://fixture.test/{number}/register",
                  uid(30), NOW, NOW),
             )
+        connection.execute("UPDATE source_listing SET canonical_event_id = %s WHERE id = %s",
+                           (uid(2), uid(21)))
+        for source, target, score in ((20, 21, 0.8), (21, 20, 0.7), (22, 20, 0.9)):
+            connection.execute("""UPDATE source_listing SET dedup_match_id = %s,
+                                  dedup_similarity = %s WHERE id = %s""",
+                               (uid(target), score, uid(source)))
 
 
 def assert_matches_postgres(database_url: str, config: GraphConfig) -> None:
@@ -154,6 +161,20 @@ def assert_matches_postgres(database_url: str, config: GraphConfig) -> None:
             node("Venue", props)
         for props in cities.values():
             node("City", props)
+        scored_listings = connection.execute("""SELECT id, canonical_event_id,
+            dedup_match_id, dedup_similarity FROM source_listing""").fetchall()
+        current_events = {listing: canonical for listing, canonical, _, _ in scored_listings}
+        similarities: dict[tuple[str, str], float] = {}
+        for _, source, match, score in scored_listings:
+            target = current_events.get(match)
+            if (source is None or target is None or source == target or score is None
+                    or not math.isfinite(score) or not -1 <= score <= 1):
+                continue
+            pair = tuple(sorted((str(source), str(target))))
+            similarities[pair] = max(similarities.get(pair, -1), score)
+        for (source, target), score in similarities.items():
+            edges.append({"source": source, "type": "SIMILAR_TO", "target": target,
+                          "props": {"score": score}})
     # Compare multisets, so duplicate nodes or relationships fail too.
     actual_nodes, actual_edges = graph_state(config)
     # Compare values, not JSON number formatting (Postgres renders 40.0 as 40).
@@ -174,7 +195,7 @@ def test_rebuild_exact_idempotent_and_repairs_drift(
     first = project_to_neo4j(database_url, graph_config, airflow_run_id="same", clock=lambda: NOW)
     assert first == {"CanonicalEvent": 2, "SourceListing": 3, "Venue": 4, "City": 2,
                      "Category": 17, "LISTS": 2, "HELD_AT": 1, "HAS_CATEGORY": 1, "IN_CITY": 3,
-                     "SUBCATEGORY_OF": 9}
+                     "SUBCATEGORY_OF": 9, "SIMILAR_TO": 1}
     assert_matches_postgres(database_url, graph_config)
     before = graph_state(graph_config)
     assert project_to_neo4j(
@@ -229,3 +250,33 @@ def test_failed_write_preserves_graph_and_retry_closes_same_run(
                                    WHERE airflow_run_id = 'retry'""").fetchall() == [
             ("success", None),
         ]
+
+
+def test_similarity_collapses_pairs_and_tracks_merges(
+    database_url: str, graph_config: GraphConfig,
+) -> None:
+    seed_projection(database_url)
+    with psycopg.connect(pg_url(database_url)) as connection:
+        for number, target, score in ((23, 21, 0.85), (24, 21, float('nan')),
+                                      (25, 21, float('inf')), (26, 21, 1.1),
+                                      (27, 20, 0.99), (28, 21, -0.5)):
+            connection.execute("""INSERT INTO source_listing (
+                id, canonical_event_id, source, source_event_id, url, raw_payload,
+                dedup_match_id, dedup_similarity, ingestion_run_id, first_seen_at, last_seen_at
+            ) VALUES (%s, %s, 'fixture', %s, 'https://fixture.test', '{}', %s, %s, %s, %s, %s)""",
+                (uid(number), uid(1), str(number), uid(target), score, uid(30), NOW, NOW))
+    project_to_neo4j(database_url, graph_config, airflow_run_id="scores", clock=lambda: NOW)
+    assert_matches_postgres(database_url, graph_config)
+    assert cypher(graph_config, "MATCH ()-[r:SIMILAR_TO]->() RETURN r.score AS score") == [
+        {"score": 0.85},
+    ]
+    with psycopg.connect(pg_url(database_url)) as connection:
+        connection.execute("""UPDATE source_listing SET canonical_event_id = %s
+                              WHERE canonical_event_id = %s""",
+                           (uid(1), uid(2)))
+        connection.execute("DELETE FROM canonical_event WHERE id = %s", (uid(2),))
+    project_to_neo4j(database_url, graph_config, airflow_run_id="merged", clock=lambda: NOW)
+    assert_matches_postgres(database_url, graph_config)
+    assert cypher(graph_config, "MATCH ()-[r:SIMILAR_TO]->() RETURN count(r) AS count") == [
+        {"count": 0},
+    ]

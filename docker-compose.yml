@@ -68,7 +68,8 @@ services:
         - CMD-SHELL
         - 'cypher-shell -a bolt://localhost:7687 -u "$$GRAPH_USER" -p "$$GRAPH_PASSWORD" -d "$$GRAPH_DATABASE" "RETURN 1"'
       interval: 10s
-      timeout: 10s
+      # Allow the Java client to start on a busy local Docker host.
+      timeout: 30s
       retries: 18
       start_period: 30s
     restart: unless-stopped

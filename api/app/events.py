@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, HttpUrl, TypeAdapter
 from sqlalchemy import Connection, text
+from sqlalchemy.engine import RowMapping
 
 from app.categories import expand_categories
 from app.clock import utc_now
@@ -118,9 +119,7 @@ def get_event_filters(
 
     category_values = tuple(
         dict.fromkeys(
-            category.strip()
-            for category in (categories or "").split(",")
-            if category.strip()
+            category.strip() for category in (categories or "").split(",") if category.strip()
         )
     )
     if categories is not None and not category_values:
@@ -410,28 +409,29 @@ def list_events(
             west=bounds.west,
         )
     rows = connection.execute(query, parameters).mappings()
-    event_features: list[EventFeature | GridCellFeature] = [
-        EventFeature(
-            id=str(row["id"]),
-            geometry=PointGeometry(coordinates=(float(row["longitude"]), float(row["latitude"]))),
-            properties=EventProperties(
-                title=str(row["title"]),
-                description=row["description"],
-                starts_at=row["starts_at"],
-                ends_at=row["ends_at"],
-                timezone=str(row["timezone"]),
-                primary_category=row["primary_category"],
-                venue=VenueProperties(
-                    id=str(row["venue_id"]) if row["venue_id"] is not None else None,
-                    name=row["venue_name"],
-                    formatted_address=row["formatted_address"],
-                    city=row["city"],
-                ),
-                registration_links=REGISTRATION_LINKS_ADAPTER.validate_python(
-                    row["registration_links"]
-                ),
-            ),
-        )
-        for row in rows
-    ]
+    event_features: list[EventFeature | GridCellFeature] = [event_feature(row) for row in rows]
     return EventFeatureCollection(features=event_features)
+
+
+def event_feature(row: RowMapping) -> EventFeature:
+    return EventFeature(
+        id=str(row["id"]),
+        geometry=PointGeometry(coordinates=(float(row["longitude"]), float(row["latitude"]))),
+        properties=EventProperties(
+            title=str(row["title"]),
+            description=row["description"],
+            starts_at=row["starts_at"],
+            ends_at=row["ends_at"],
+            timezone=str(row["timezone"]),
+            primary_category=row["primary_category"],
+            venue=VenueProperties(
+                id=str(row["venue_id"]) if row["venue_id"] is not None else None,
+                name=row["venue_name"],
+                formatted_address=row["formatted_address"],
+                city=row["city"],
+            ),
+            registration_links=REGISTRATION_LINKS_ADAPTER.validate_python(
+                row["registration_links"]
+            ),
+        ),
+    )

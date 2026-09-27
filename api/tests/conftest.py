@@ -12,7 +12,7 @@ from ingestion.graph import GraphConfig
 from testcontainers.community.neo4j import Neo4jContainer
 from testcontainers.community.postgres import PostgresContainer
 
-from app.categories import graph_driver
+from app.graph import graph_driver
 
 
 @pytest.fixture(scope="session")

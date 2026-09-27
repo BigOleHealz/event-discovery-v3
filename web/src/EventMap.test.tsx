@@ -7,6 +7,7 @@ import { EventMap } from "./EventMap";
 import { fetchCategories } from "./categories";
 
 const mapConstructor = vi.fn();
+vi.mock("./similarEvents", () => ({ fetchSimilarEvents: vi.fn().mockResolvedValue([]) }));
 const markerConstructor = vi.fn();
 const pinConstructor = vi.fn();
 vi.mock("./categories", async (importOriginal) => {

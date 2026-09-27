@@ -377,7 +377,8 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
           Refresh events
         </button> : null}
       </div>
-      <EventDetailPanel event={selectedEvent} onClose={closeDetails} />
+      <EventDetailPanel apiBaseUrl={apiBaseUrl} event={selectedEvent}
+        onClose={closeDetails} onSelect={setSelectedEvent} />
     </section>
   );
 }

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 
 import type { EventFeature, RegistrationLink } from "./events";
+import { SimilarEvents } from "./SimilarEventList";
 
 const DATE_TIME_FORMATTERS = new Map<string, Intl.DateTimeFormat>();
 const SOURCE_NAMES: Readonly<Record<string, string>> = {
@@ -9,8 +10,10 @@ const SOURCE_NAMES: Readonly<Record<string, string>> = {
 };
 
 interface EventDetailPanelProps {
+  apiBaseUrl: string;
   event: EventFeature | null;
   onClose: () => void;
+  onSelect: (event: EventFeature) => void;
 }
 
 function dateTimeFormatter(timeZone: string): Intl.DateTimeFormat {
@@ -61,14 +64,16 @@ function RegistrationButton({ registration }: { registration: RegistrationLink }
   );
 }
 
-export function EventDetailPanel({ event, onClose }: EventDetailPanelProps) {
+export function EventDetailPanel({ apiBaseUrl, event, onClose, onSelect }: EventDetailPanelProps) {
   const panel = useRef<HTMLElement>(null);
+  const content = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (event === null) {
       return;
     }
     panel.current?.focus();
+    if (content.current !== null) content.current.scrollTop = 0;
     const handleKeyDown = (keyboardEvent: KeyboardEvent): void => {
       if (keyboardEvent.key === "Escape") {
         onClose();
@@ -97,7 +102,7 @@ export function EventDetailPanel({ event, onClose }: EventDetailPanelProps) {
       <button className="detail-close" type="button" onClick={onClose} aria-label="Close details">
         <span aria-hidden="true">×</span>
       </button>
-      <div className="detail-scroll">
+      <div ref={content} className="detail-scroll">
         <p className="eyebrow">{properties.primary_category ?? "Philadelphia event"}</p>
         <h2 id="event-detail-title">{properties.title}</h2>
         <time dateTime={properties.starts_at}>{formatEventTime(event)}</time>
@@ -116,6 +121,8 @@ export function EventDetailPanel({ event, onClose }: EventDetailPanelProps) {
             <p>{properties.description}</p>
           </section>
         )}
+        <SimilarEvents key={`${apiBaseUrl}:${event.id}`} apiBaseUrl={apiBaseUrl}
+          eventId={event.id} onSelect={onSelect} />
       </div>
 
       <footer className="detail-actions" aria-label="Registration options">

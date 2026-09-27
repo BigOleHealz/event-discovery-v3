@@ -132,7 +132,7 @@ function isEventProperties(value: unknown): value is EventProperties {
   );
 }
 
-function isEventFeature(value: unknown): value is EventFeature {
+export function isEventFeature(value: unknown): value is EventFeature {
   return (
     isRecord(value) &&
     value.type === "Feature" &&
