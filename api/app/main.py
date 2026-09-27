@@ -1,10 +1,14 @@
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from app.categories import graph_driver
+from app.categories import router as categories_router
 from app.dedup_review import router as review_router
 from app.events import router as events_router
 
@@ -13,7 +17,15 @@ class HealthResponse(BaseModel):
     status: Literal["ok"]
 
 
-app = FastAPI(title="Event Discovery API")
+@asynccontextmanager
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    yield
+    if graph_driver.cache_info().currsize:
+        graph_driver().close()
+        graph_driver.cache_clear()
+
+
+app = FastAPI(title="Event Discovery API", lifespan=lifespan)
 
 allowed_origins = [
     origin.strip() for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if origin.strip()
@@ -28,6 +40,7 @@ if allowed_origins:
     )
 
 app.include_router(events_router)
+app.include_router(categories_router)
 app.include_router(review_router)
 
 

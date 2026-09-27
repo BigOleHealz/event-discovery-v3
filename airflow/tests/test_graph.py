@@ -98,22 +98,33 @@ def assert_matches_postgres(database_url: str, config: GraphConfig) -> None:
 
     with psycopg.connect(pg_url(database_url)) as connection:
         connection.execute("SET LOCAL TIME ZONE 'UTC'")
+        category_rows = connection.execute("SELECT id, name, parent_id FROM category").fetchall()
+        aliases = connection.execute("SELECT alias, category_id FROM category_alias").fetchall()
+        alias_ids = dict(aliases)
+        categories = {category_id: {"id": category_id, "name": name, "parent_id": parent,
+                      "aliases": sorted(alias for alias, target in aliases
+                                        if target == category_id)}
+                      for category_id, name, parent in category_rows}
         events = connection.execute("""
             SELECT to_jsonb(e) - 'location' || jsonb_build_object(
                 'latitude', ST_Y(location::geometry), 'longitude', ST_X(location::geometry))
             FROM canonical_event e ORDER BY id
         """).fetchall()
-        categories = set()
         for (props,) in events:
             node("CanonicalEvent", props)
             if props["venue_id"]:
                 edge(props["id"], "HELD_AT", props["venue_id"])
-            if props["primary_category"] is not None:
-                category = props["primary_category"]
-                categories.add(category)
+            label = (props["primary_category"] or "").strip()
+            if label:
+                category = alias_ids.get(label.lower(), f"unmapped:{label.lower()}")
+                if category not in categories:
+                    categories[category] = {"id": category, "name": label,
+                                            "parent_id": "other", "aliases": [label.lower()]}
                 edge(props["id"], "HAS_CATEGORY", category)
-        for category in categories:
-            node("Category", {"id": category, "name": category})
+        for props in categories.values():
+            node("Category", props)
+            if props["parent_id"] is not None:
+                edge(props["id"], "SUBCATEGORY_OF", props["parent_id"])
         listings = connection.execute("""
             SELECT jsonb_build_object(
                 'id', id, 'canonical_event_id', canonical_event_id, 'source', source,
@@ -162,7 +173,8 @@ def test_rebuild_exact_idempotent_and_repairs_drift(
     seed_projection(database_url)
     first = project_to_neo4j(database_url, graph_config, airflow_run_id="same", clock=lambda: NOW)
     assert first == {"CanonicalEvent": 2, "SourceListing": 3, "Venue": 4, "City": 2,
-                     "Category": 1, "LISTS": 2, "HELD_AT": 1, "HAS_CATEGORY": 1, "IN_CITY": 3}
+                     "Category": 17, "LISTS": 2, "HELD_AT": 1, "HAS_CATEGORY": 1, "IN_CITY": 3,
+                     "SUBCATEGORY_OF": 9}
     assert_matches_postgres(database_url, graph_config)
     before = graph_state(graph_config)
     assert project_to_neo4j(
@@ -187,7 +199,10 @@ def test_rebuild_exact_idempotent_and_repairs_drift(
         ).fetchall() == [("success", 3, NOW, NOW)]
         connection.execute("TRUNCATE source_listing, canonical_event, venue CASCADE")
     project_to_neo4j(database_url, graph_config, airflow_run_id="empty", clock=lambda: NOW)
-    assert graph_state(graph_config) == ([], [])
+    assert_matches_postgres(database_url, graph_config)
+    assert cypher(graph_config, "MATCH (e:CanonicalEvent) RETURN count(e) AS count") == [
+        {"count": 0},
+    ]
 
 
 def test_failed_write_preserves_graph_and_retry_closes_same_run(

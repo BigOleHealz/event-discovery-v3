@@ -34,11 +34,20 @@ function normalizedCategory(category: string | null): string {
   return category?.trim().toLowerCase() ?? "";
 }
 
-export function pinStyleForCategory(category: string | null): CategoryPinStyle {
-  const normalized = normalizedCategory(category);
+const ROOT_CATEGORIES = [
+  "music", "arts", "food-and-drink", "community", "science-and-tech", "business",
+  "sports-and-fitness", "other",
+];
+
+export function pinStyleForCategory(
+  category: string | null, rootCategory?: string,
+): CategoryPinStyle {
+  const normalized = normalizedCategory(rootCategory ?? category);
   if (normalized === "") {
     return UNCATEGORIZED_PIN_STYLE;
   }
+  const rootIndex = ROOT_CATEGORIES.indexOf(normalized);
+  if (rootIndex >= 0) return CATEGORY_PIN_PALETTE[rootIndex]!;
 
   let hash = 2_166_136_261;
   for (let index = 0; index < normalized.length; index += 1) {

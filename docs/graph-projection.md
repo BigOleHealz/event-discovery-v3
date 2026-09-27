@@ -1,4 +1,4 @@
-# Graph projection (5a)
+# Graph projection (5a–5b)
 
 Postgres owns all data. The configured Neo4j database is dedicated to this app's
 disposable projection: each rebuild replaces **all nodes and relationships**.
@@ -9,22 +9,23 @@ Copy the Neo4j settings from `.env.example` into your local environment. Then ru
 by default; `NEO4J_PROJECTION_DAG_SCHEDULE` overrides it. Trigger it manually in
 Airflow after wiping or restoring the graph. No graph backup is needed.
 
-The 5a projection includes:
+The projection includes:
 
 | Nodes | Source and identity |
 | --- | --- |
 | CanonicalEvent | Every `canonical_event`, including past/archived rows; Postgres UUID |
 | SourceListing | Every `source_listing`, including unlinked work; Postgres UUID |
 | Venue | Every `venue`; Postgres UUID |
-| Category | Distinct non-null `primary_category` values, retaining exact spelling |
+| Category | Postgres `category` taxonomy plus unrecognised source labels under Other |
 | City | Distinct venue `(city, region, country)` tuples with non-null city; JSON tuple key |
 
 `LISTS`, `HAS_CATEGORY`, `HELD_AT`, and `IN_CITY` follow those rows' references.
+`SUBCATEGORY_OF` points from a child category to its parent.
 Nullable references create no edge. Null properties are absent in Neo4j. Times are
 UTC ISO strings, UUIDs are strings, coordinates are latitude/longitude floats,
 and prices are decimal strings to avoid losing precision. Raw payloads, vectors,
-and operational metadata remain exclusively in Postgres. Category hierarchy and
-similarity edges belong to 5b/5c; social nodes and edges belong to Phase 6.
+and operational metadata remain exclusively in Postgres. Similarity edges belong
+to 5c; social nodes and edges belong to Phase 6.
 
 A Postgres session advisory lock serializes rebuilds, including manual callers.
 All reads share one repeatable-read snapshot. Neo4j constraints are recreated if
@@ -46,3 +47,31 @@ From `airflow/`, run `rtk pytest tests/test_graph.py tests/test_graph_dag.py`.
 Tests use disposable PostGIS/pgvector and Neo4j containers. They verify all projected
 properties and edges against Postgres, repeat runs, total graph deletion and recovery
 through the real DAG, stale-data removal, empty input, and rollback on a graph error.
+
+## Category filtering (5b)
+
+The migration seeds eight palette roots and a small initial hierarchy, including
+Music → Jazz → Bebop. `category_alias` maps lowercased, trimmed source labels to
+canonical IDs. Add taxonomy and alias rows through migrations, including an alias
+for each new category ID. A source label that has no alias is preserved as an
+`unmapped:<label>` Category under Other. The original event label stays in Postgres.
+This is an initial taxonomy, not an exhaustive genre catalogue.
+
+`GET /api/categories` reads names, immediate parents, root IDs, and aliases from
+Neo4j. The sidebar displays the hierarchy independently of the viewport's results.
+Selecting Music sends `categories=music`; the API traverses
+`(child)-[:SUBCATEGORY_OF*0..]->(parent)` in Cypher and passes the resulting labels
+to Postgres alongside the existing date, time, bounds, and zoom filters. Zero hops
+includes events labelled with the parent itself. Multiple selections form a union.
+The same expansion applies to aggregated cells. A graph outage returns 503 for
+category requests; unfiltered events remain available. Unrecognised exact labels
+remain filterable before the next projection.
+
+Pins and the legend use the same eight fixed root colours. Descendants resolve
+their root from the hierarchy response; cached ancestry preserves colours offline.
+After upgrading from 5a, rerun `project_to_neo4j` to populate taxonomy properties and
+edges before using the hierarchy. The projection delay remains hourly by default.
+
+From the repository root, `rtk proxy bash tests/phase1-e2e.sh` verifies parent and
+child selection through the real Compose API and Neo4j, alongside existing browser
+flows. Only Google Maps JavaScript is replaced with a recorded browser fixture.

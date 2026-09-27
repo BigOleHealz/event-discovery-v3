@@ -4,10 +4,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AGGREGATED_CELL_PIN_STYLE, pinStyleForCategory } from "./categoryPinStyle";
 import type { EventFeatureCollection, EventMapFeatureCollection } from "./events";
 import { EventMap } from "./EventMap";
+import { fetchCategories } from "./categories";
 
 const mapConstructor = vi.fn();
 const markerConstructor = vi.fn();
 const pinConstructor = vi.fn();
+vi.mock("./categories", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./categories")>();
+  return { ...original, fetchCategories: vi.fn().mockResolvedValue([]) };
+});
 const markerClustererConstructor = vi.fn();
 const markerInstances: FakeMarker[] = [];
 const markerClustererInstances: FakeMarkerClusterer[] = [];
@@ -190,6 +195,25 @@ function stubEventResponse(
 }
 
 describe("EventMap", () => {
+  it("colors a descendant from loaded ancestry and preserves parent filtering in the URL", async () => {
+    vi.mocked(fetchCategories).mockResolvedValueOnce([
+      { id: "music", name: "Music", parent_id: null, root_id: "music", aliases: ["music"] },
+      { id: "bebop", name: "Bebop", parent_id: "music", root_id: "music", aliases: ["bebop"] },
+    ]);
+    const first = events.features[0]!;
+    stubEventResponse([{ type: "FeatureCollection", features: [
+      { ...first, properties: { ...first.properties, primary_category: "Bebop" } },
+    ] }]);
+    render(<EventMap apiBaseUrl="." apiKey="test-key" mapId="map-id" />);
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("1 event"));
+    expect(pinConstructor).toHaveBeenLastCalledWith(expect.objectContaining(pinStyleForCategory("music")));
+    const parent = screen.getByRole("option", { name: "Music" }) as HTMLOptionElement;
+    parent.selected = true;
+    fireEvent.change(screen.getByRole("listbox", { name: "Categories" }));
+    await waitFor(() => expect(window.location.search).toContain("categories=music"));
+    expect(new URL(String(vi.mocked(fetch).mock.calls.at(-1)?.[0])).searchParams.get("categories")).toBe("music");
+  });
+
   it("clusters longitude-correct individual event markers", async () => {
     stubEventResponse();
 

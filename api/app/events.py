@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, HttpUrl, TypeAdapter
 from sqlalchemy import Connection, text
 
+from app.categories import expand_categories
 from app.clock import utc_now
 from app.database import get_connection
 
@@ -193,7 +194,7 @@ FILTER_CLAUSE = """
       )
       AND (
           CAST(:categories AS text[]) IS NULL
-          OR event.primary_category = ANY(CAST(:categories AS text[]))
+          OR lower(btrim(event.primary_category)) = ANY(CAST(:categories AS text[]))
       )
       AND (
           (
@@ -367,7 +368,7 @@ def list_events(
     parameters: dict[str, object] = {
         "starts_after": filters.starts_after,
         "starts_before": filters.starts_before,
-        "categories": list(filters.categories) or None,
+        "categories": expand_categories(filters.categories),
         "time_of_day_start": filters.time_of_day_start,
         "time_of_day_end": filters.time_of_day_end,
     }

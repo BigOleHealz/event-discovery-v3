@@ -11,6 +11,7 @@ from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response
+from ingestion.graph import GraphConfig, project_to_neo4j
 from sqlalchemy import Connection
 
 from app.clock import utc_now
@@ -21,15 +22,19 @@ from app.seed import EVENTS, seed_database
 
 
 @pytest.fixture
-def migrated_engine(database_url: str) -> Iterator[sa.Engine]:
+def migrated_engine(database_url: str, graph_environment: GraphConfig) -> Iterator[sa.Engine]:
     config = Config("alembic.ini")
     config.attributes["database_url"] = database_url
     command.upgrade(config, "head")
     engine = sa.create_engine(database_url)
     seed_database(engine)
+    project_to_neo4j(database_url, graph_environment, airflow_run_id="api-fixture",
+                    clock=lambda: datetime.fromisoformat("2026-09-26T12:00:00+00:00"))
     try:
         yield engine
     finally:
+        with engine.begin() as connection:
+            connection.execute(sa.text("DELETE FROM ingest.run WHERE market_id IS NULL"))
         engine.dispose()
         command.downgrade(config, "base")
 

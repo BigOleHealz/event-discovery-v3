@@ -20,7 +20,7 @@ from psycopg.rows import dict_row
 from ingestion.clock import Clock
 from ingestion.database import RUN_NAMESPACE
 
-Property = str | int | float | bool | None
+Property = str | int | float | bool | list[str] | None
 Properties = dict[str, Property]
 
 # SQL and Cypher identifiers below are constants, never user input.
@@ -49,8 +49,19 @@ NODE_QUERIES = {
         FROM venue WHERE city IS NOT NULL ORDER BY id
     """,
     "Category": """
-        SELECT DISTINCT primary_category AS id, primary_category AS name
-        FROM canonical_event WHERE primary_category IS NOT NULL ORDER BY id
+        SELECT c.id, c.name, c.parent_id,
+               ARRAY(SELECT a.alias FROM category_alias a
+                     WHERE a.category_id = c.id ORDER BY a.alias COLLATE "C") AS aliases
+        FROM category c
+        UNION ALL
+        SELECT 'unmapped:' || lower(btrim(primary_category)), min(btrim(primary_category)),
+               'other', ARRAY[lower(btrim(primary_category))]
+        FROM canonical_event e
+        WHERE NULLIF(btrim(primary_category), '') IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM category_alias a
+                          WHERE a.alias = lower(btrim(e.primary_category)))
+        GROUP BY lower(btrim(primary_category))
+        ORDER BY id
     """,
 }
 
@@ -61,7 +72,12 @@ EDGE_QUERIES = {
     """,
     "HAS_CATEGORY": """
         MATCH (a:CanonicalEvent), (b:Category)
-        WHERE a.primary_category = b.id CREATE (a)-[:HAS_CATEGORY]->(b)
+        WHERE toLower(trim(a.primary_category)) IN b.aliases
+        CREATE (a)-[:HAS_CATEGORY]->(b)
+    """,
+    "SUBCATEGORY_OF": """
+        MATCH (a:Category), (b:Category)
+        WHERE a.parent_id = b.id CREATE (a)-[:SUBCATEGORY_OF]->(b)
     """,
     "HELD_AT": """
         MATCH (a:CanonicalEvent), (b:Venue)
@@ -101,6 +117,8 @@ def _property(value: object) -> Property:
         return value.isoformat()
     if isinstance(value, (uuid.UUID, Decimal)):
         return str(value)
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return [str(item) for item in value]
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     raise TypeError(f"Unsupported graph property: {type(value).__name__}")
