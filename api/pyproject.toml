@@ -1,6 +1,6 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".", "../airflow"]
 addopts = "-q --no-header --tb=short -p no:cacheprovider"
 
 [tool.ruff]

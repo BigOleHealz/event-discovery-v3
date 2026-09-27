@@ -11,6 +11,8 @@ test("renders pins, event detail, and an installable offline shell", async ({ pa
     Object.defineProperty(window, "fixtureMapZoom", { value: 20 });
   });
   const mapsFixture = await readFile(mapsFixturePath, "utf8");
+  // This offline flow deliberately uses flat fixture labels; hierarchy has a real API test.
+  await page.route("**/api/categories", (route) => route.fulfill({ json: [] }));
   await page.route("https://maps.googleapis.com/maps/api/js?*", async (route) => {
     await route.fulfill({
       status: 200,

@@ -357,6 +357,20 @@ a {
   margin-top: 1.2rem;
 }
 
+.similar-events { list-style: none; margin: 0; padding: 0; }
+.similar-events li + li { margin-top: 0.6rem; }
+.similar-events button, .similar-retry {
+  width: 100%; padding: 0.75rem; border: 1px solid #b9b5a6;
+  border-radius: 0.65rem; background: #fffdf6; color: #253127;
+  text-align: left; cursor: pointer; font: inherit;
+}
+.similar-events button:hover, .similar-retry:hover { background: #eceade; }
+.similar-events button:focus-visible, .similar-retry:focus-visible {
+  outline: 3px solid #a53f25; outline-offset: 2px;
+}
+.similar-events button span { display: block; font-weight: 600; }
+.similar-events button time { display: block; margin-top: 0.3rem; font-size: 0.8rem; }
+
 .detail-section h3 {
   margin: 0 0 0.42rem;
   color: #a84631;

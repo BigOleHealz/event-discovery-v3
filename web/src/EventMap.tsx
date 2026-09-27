@@ -3,6 +3,7 @@ import type { MarkerClusterer as MarkerClustererInstance } from "@googlemaps/mar
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { EventDetailPanel } from "./EventDetailPanel";
+import { categoryRoots, fetchCategories, type Category } from "./categories";
 import { EventFilterSidebar } from "./EventFilterSidebar";
 import { AGGREGATED_CELL_PIN_STYLE, pinStyleForCategory } from "./categoryPinStyle";
 import { readEventFilters, replaceEventFilterUrl } from "./eventFilterState";
@@ -52,6 +53,10 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
   const filtersRef = useRef(filters);
   const refetchViewportRef = useRef<((retryMap?: boolean) => Promise<void>) | null>(null);
   const [availableCategories, setAvailableCategories] = useState<string[]>(filters.categories);
+  const [hierarchy, setHierarchy] = useState<Category[]>([]);
+  const [categoryError, setCategoryError] = useState<string | null>(null);
+  const rootsRef = useRef(new Map<string, string>());
+  const repaintRef = useRef<(() => void) | null>(null);
   const [eventCount, setEventCount] = useState<number | null>(null);
   const [stale, setStale] = useState(false);
   const [mapUnavailable, setMapUnavailable] = useState(false);
@@ -65,6 +70,25 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
   }, []);
 
   useEffect(() => {
+    const controller = new AbortController();
+    async function load(): Promise<void> {
+      try {
+        const categories = await fetchCategories(apiBaseUrl, controller.signal);
+        if (controller.signal.aborted) return;
+        setHierarchy(categories);
+        setCategoryError(null);
+        rootsRef.current = categoryRoots(categories);
+        repaintRef.current?.();
+      } catch {
+        if (!controller.signal.aborted) setCategoryError("Category hierarchy unavailable. Showing known labels.");
+      }
+    }
+    void load();
+    window.addEventListener("online", load);
+    return () => { controller.abort(); window.removeEventListener("online", load); };
+  }, [apiBaseUrl]);
+
+  useEffect(() => {
     let requestController = new AbortController();
     let markers: google.maps.marker.AdvancedMarkerElement[] = [];
     let markerListeners: google.maps.MapsEventListener[] = [];
@@ -74,6 +98,7 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
     let cancelled = false;
 
     function clearMarkers(): void {
+      repaintRef.current = null;
       markerClusterer?.clearMarkers(true);
       markerClusterer?.setMap(null);
       markerClusterer = null;
@@ -96,6 +121,7 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
 
     function renderEvents(nextEvents: EventMapFeature[]): void {
       clearMarkers();
+      repaintRef.current = () => renderEvents(nextEvents);
       setFeatures(nextEvents);
       setSelectedEvent((current) => nextEvents.find(
         (event): event is EventFeature => !isAggregatedGridCell(event) && event.id === current?.id,
@@ -115,7 +141,8 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
         const isGridCell = isAggregatedGridCell(event);
         const pinStyle = isGridCell
           ? AGGREGATED_CELL_PIN_STYLE
-          : pinStyleForCategory(event.properties.primary_category);
+          : pinStyleForCategory(event.properties.primary_category,
+              rootsRef.current.get(event.properties.primary_category?.trim().toLowerCase() ?? ""));
         const marker = new markerLibrary!.AdvancedMarkerElement({
           ...(isGridCell ? { map } : {}),
           position: { lat: latitude, lng: longitude },
@@ -287,6 +314,7 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
       }
       clearMarkers();
       refetchViewportRef.current = null;
+      repaintRef.current = null;
     };
   }, [apiBaseUrl, apiKey, mapId]);
 
@@ -336,6 +364,8 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
       </section> : null}
       <EventFilterSidebar
         availableCategories={availableCategories}
+        hierarchy={hierarchy}
+        categoryError={categoryError}
         filters={filters}
         onChange={changeFilters}
       />
@@ -347,7 +377,8 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
           Refresh events
         </button> : null}
       </div>
-      <EventDetailPanel event={selectedEvent} onClose={closeDetails} />
+      <EventDetailPanel apiBaseUrl={apiBaseUrl} event={selectedEvent}
+        onClose={closeDetails} onSelect={setSelectedEvent} />
     </section>
   );
 }
