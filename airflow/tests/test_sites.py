@@ -87,6 +87,22 @@ def seed(database_url: str, source: SiteAdapter | None = None) -> SiteAdapter:
             ),
         )
         connection.execute(
+            """UPDATE ingest.source_adapter SET access_policy=%s,
+               min_request_interval_seconds=1 WHERE source=%s""",
+            (
+                Jsonb(
+                    {
+                        "status": "reviewed",
+                        "reviewed_at": NOW.isoformat(),
+                        "listing_urls": ["https://fixture.test/events"],
+                        "references": ["https://fixture.test/policy"],
+                        "notes": "Synthetic fixture only",
+                    }
+                ),
+                source.source,
+            ),
+        )
+        connection.execute(
             """
             INSERT INTO ingest.crawl_target
                 (id, source, market_id, source_location, category, enabled, window_days, page_cap)

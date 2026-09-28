@@ -1,0 +1,39 @@
+{
+  "items": "#maintable > .ant-row.bm-wrap",
+  "empty_selector": null,
+  "next_selector": null,
+  "fields": {
+    "source_event_id": null,
+    "url": null,
+    "title": {
+      "selector": "h2",
+      "attribute": null,
+      "format": null,
+      "parts": [
+        {
+          "selector": "h2",
+          "attribute": null,
+          "scope": "card",
+          "own_text": true
+        }
+      ],
+      "split_before": null,
+      "strip_ordinals": false
+    },
+    "description": null,
+    "starts_at": {
+      "selector": "h2 em",
+      "attribute": null,
+      "format": "%A %B %d, %Y @ %I:%M%p",
+      "parts": null,
+      "split_before": " - ",
+      "strip_ordinals": true
+    },
+    "ends_at": null,
+    "venue_name": null,
+    "venue_address": null,
+    "venue_city": null,
+    "venue_region": null,
+    "venue_country": null
+  }
+}

@@ -70,6 +70,25 @@ class SiteAdapter:
         if any(f'"{key}"' in json.dumps(schema) for key in ("$ref", "$dynamicRef")):
             raise ValueError("schema references are not supported")
         Draft202012Validator.check_schema(schema)
+        venue = self.extraction.get("venue", {})
+        if not isinstance(venue, dict) or any(
+            key not in FIELDS
+            or not key.startswith("venue_")
+            or not isinstance(value, str)
+            or not value.strip()
+            for key, value in venue.items()
+        ):
+            raise ValueError("venue defaults must contain nonempty venue fields only")
+        filters = self.extraction.get("card_filter", {})
+        if not isinstance(filters, dict) or any(
+            key not in ("include_all", "exclude_any")
+            or not isinstance(value, list)
+            or any(not isinstance(word, str) or not word.strip() for word in value)
+            for key, value in filters.items()
+        ):
+            raise ValueError("invalid card_filter")
+        if self.extraction.get("identity") not in (None, "title_start_venue"):
+            raise ValueError("unsupported site identity strategy")
         if self.pagination.get("kind") not in ("none", "query", "next_link", "action"):
             raise ValueError("unsupported pagination kind")
         if self.pagination["kind"] == "query":
@@ -82,7 +101,7 @@ class SiteAdapter:
     @property
     def config_hash(self) -> str:
         value = {
-            "engine": "site-plan-v1",
+            "engine": "site-plan-v2",
             "source": self.source,
             "method": self.fetch_method,
             "extraction": self.extraction,

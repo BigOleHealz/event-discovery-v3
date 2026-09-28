@@ -1,0 +1,45 @@
+{
+  "items": "#main-content .ant-row.bm-wrap:has(h4)",
+  "empty_selector": null,
+  "next_selector": null,
+  "fields": {
+    "source_event_id": null,
+    "url": null,
+    "title": {
+      "selector": "h4",
+      "attribute": null,
+      "format": null,
+      "parts": null,
+      "split_before": null,
+      "strip_ordinals": false
+    },
+    "description": null,
+    "starts_at": {
+      "selector": "h4 + div > div.ant-space",
+      "attribute": null,
+      "format": "%A %b %d, %Y %I:%M %p",
+      "parts": [
+        {
+          "selector": "div.ant-space-item:nth-of-type(1) > div",
+          "attribute": null,
+          "scope": "card",
+          "own_text": false
+        },
+        {
+          "selector": "div.ant-space-item:nth-of-type(2) > div",
+          "attribute": null,
+          "scope": "card",
+          "own_text": false
+        }
+      ],
+      "split_before": null,
+      "strip_ordinals": true
+    },
+    "ends_at": null,
+    "venue_name": null,
+    "venue_address": null,
+    "venue_city": null,
+    "venue_region": null,
+    "venue_country": null
+  }
+}

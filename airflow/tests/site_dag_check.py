@@ -12,21 +12,25 @@ with patch("ingestion.clock.utc_now", return_value=datetime(2026, 9, 27, 12, tzi
 assert not bag.import_errors, bag.import_errors
 for name in ("ingest_site_stagehand", "ingest_site_generic"):
     dag = bag.dags[name]
-    chain = (
-        "configured_targets",
-        "open_run",
-        "fetch_pages",
-        "collect_ids",
-        "fetch_details",
-        "parse_listings",
-        "close_run",
+    chain = ("configured_targets",) + tuple(
+        "ingest_target." + name
+        for name in (
+            "open_run",
+            "fetch_pages",
+            "collect_ids",
+            "fetch_details",
+            "parse_listings",
+            "close_run",
+        )
     )
     assert set(dag.task_dict) == set(chain)
     assert not dag.catchup and dag.max_active_runs == 1
     for left, right in zip(chain, chain[1:], strict=False):
         assert left in dag.task_dict[right].upstream_task_ids
-    assert dag.task_dict["fetch_pages"].retries == 2
-    assert dag.task_dict["fetch_pages"].retry_delay == timedelta(minutes=1)
+    assert dag.task_dict["ingest_target.fetch_pages"].retries == 2
+    assert dag.task_dict["ingest_target.fetch_pages"].retry_delay == timedelta(minutes=1)
+    for task in dag.tasks:
+        task.retries = 0  # A deliberately blocked target must not delay this offline test.
     for hour in (0, 1):
         run = dag.test(logical_date=datetime(2026, 9, 27, hour, tzinfo=UTC))
-        assert run.state == "success", run.state
+        assert run.state == ("failed" if name == "ingest_site_stagehand" else "success")

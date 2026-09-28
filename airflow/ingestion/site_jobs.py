@@ -22,6 +22,7 @@ from ingestion.pipeline import (
 from ingestion.site_extraction import PlanModel
 from ingestion.site_models import SiteAdapter
 from ingestion.site_pipeline import SiteClient, SiteProcessConfig, crawl_site
+from ingestion.site_policy import SourcePolicy
 from ingestion.site_repository import SiteRepository
 
 
@@ -111,7 +112,7 @@ def fetch_site_pages(
                 targets=targets_from(context),
                 run_id=run_id,
                 repository=SiteRepository(database_url),
-                client=SiteClient(http, config),
+                client=SiteClient(http, config, SourcePolicy(database_url, clock)),
                 derive=PlanModel(
                     http,
                     config.extraction_api_url,

@@ -6,6 +6,7 @@ import os
 import time
 import uuid
 from collections.abc import Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
@@ -15,6 +16,7 @@ from ingestion.clock import Clock
 from ingestion.models import CrawlTarget
 from ingestion.site_extraction import DerivePlan
 from ingestion.site_models import SiteAdapter, http_url
+from ingestion.site_policy import SourcePolicy
 from ingestion.site_repository import PAGE_NAMESPACE, SitePage, SiteRepository
 
 
@@ -55,9 +57,11 @@ class SiteClient:
         self,
         client: httpx.Client,
         config: SiteProcessConfig,
+        policy: SourcePolicy | None = None,
     ) -> None:
         self.client = client
         self.config = config
+        self.policy = policy
 
     def fetch(
         self,
@@ -75,11 +79,21 @@ class SiteClient:
             }
             if adapter.extraction.get("ready_selector"):
                 body["ready_selector"] = adapter.extraction["ready_selector"]
-            response = self.client.post(
-                self.config.stagehand_url.rstrip("/") + "/v1/fetch",
-                json=body,
-                headers={"Authorization": f"Bearer {self.config.stagehand_token}"},
+            guard = (
+                self.policy.request(adapter.source, url, self.config.timeout_seconds)
+                if self.policy
+                else nullcontext(0.0)
             )
+            with guard as interval:
+                body["steps"] = [
+                    {**step, "delay_ms": max(int(interval * 1000), int(str(step["delay_ms"])))}
+                    for step in steps
+                ]
+                response = self.client.post(
+                    self.config.stagehand_url.rstrip("/") + "/v1/fetch",
+                    json=body,
+                    headers={"Authorization": f"Bearer {self.config.stagehand_token}"},
+                )
             response.raise_for_status()
             data = response.json()
             if not isinstance(data.get("html"), str) or not isinstance(
@@ -90,7 +104,12 @@ class SiteClient:
         else:
             current = url
             for _ in range(6):
-                with self.client.stream("GET", current, follow_redirects=False) as response:
+                guard = (
+                    self.policy.request(adapter.source, current, self.config.timeout_seconds)
+                    if self.policy
+                    else nullcontext(0.0)
+                )
+                with guard, self.client.stream("GET", current, follow_redirects=False) as response:
                     if response.is_redirect:
                         current = same_origin(url, urljoin(current, response.headers["location"]))
                         continue

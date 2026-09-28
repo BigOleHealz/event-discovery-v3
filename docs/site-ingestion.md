@@ -138,3 +138,10 @@ HTTP substitutes. `api/tests/test_site_migration.py` verifies constraints and mi
 round trips. The worker's real Chromium tests run with networking disabled via
 `bash tests/phase8a-compose.sh`. All page/model fixtures are synthetic and labelled under
 `tests/fixtures/site/`; no paid model calls or live scraper requests are used by the suite.
+
+## Local sources
+
+Phase 8c seeds reviewed Philadelphia-area and Baltimore calendars. See
+[local-sources.md](local-sources.md) for scope, access policies, pacing, recorded fixtures and
+activation instructions. New generic plan capabilities are versioned as `site-plan-v2`;
+configuration changes or that engine change invalidate the cached plan.

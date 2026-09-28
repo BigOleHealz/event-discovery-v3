@@ -17,7 +17,7 @@ from ingestion.site_repository import SiteRepository
 
 
 @pytest.mark.usefixtures("clean_ingestion_tables")
-def test_real_mapped_site_dags_replay_without_model_calls(
+def test_real_mapped_site_dags_replay_and_isolate_failed_targets(
     database_url: str, tmp_path: Path
 ) -> None:
     calls = {"model": 0, "browser": 0}
@@ -60,6 +60,18 @@ def test_real_mapped_site_dags_replay_without_model_calls(
         connection.execute(
             "UPDATE ingest.crawl_target SET source_location=%s WHERE source='fixture-site'",
             (Jsonb({"kind": "listing_url", "url": base + "/events"}),),
+        )
+        connection.execute(
+            """UPDATE ingest.source_adapter SET access_policy =
+            jsonb_set(access_policy, '{listing_urls}', %s) WHERE source='fixture-site'""",
+            (Jsonb([base + "/events"]),),
+        )
+        connection.execute(
+            """INSERT INTO ingest.crawl_target
+            (id,source,market_id,source_location,category,enabled,window_days,page_cap)
+            VALUES (gen_random_uuid(),'fixture-site',
+            'bf2d365e-2eb6-4eed-a112-662c7b435893',%s,'music',true,5,4)""",
+            (Jsonb({"kind": "listing_url", "url": base + "/unreviewed"}),),
         )
     log = tmp_path / "site-dag.log"
     try:
@@ -117,4 +129,5 @@ def test_real_mapped_site_dags_replay_without_model_calls(
         assert connection.execute("""
             SELECT status, events_found, count(*) FROM ingest.run
             WHERE source='fixture-site' GROUP BY status, events_found
-        """).fetchall() == [("success", 1, 2)]
+            ORDER BY status
+        """).fetchall() == [("failed", 0, 2), ("success", 1, 2)]

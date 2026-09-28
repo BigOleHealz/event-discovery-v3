@@ -12,7 +12,8 @@ def test_site_inventory_constraints_and_round_trip(database_url: str) -> None:
     with engine.connect() as connection:
         assert connection.execute(
             sa.text("""
-            SELECT source, fetch_method, priority FROM ingest.source_adapter ORDER BY priority
+            SELECT source, fetch_method, priority FROM ingest.source_adapter
+            WHERE fetch_method='api' ORDER BY priority
         """)
         ).all() == [("eventbrite", "api", 0), ("meetup", "api", 1)]
     for sql in (
@@ -36,5 +37,10 @@ def test_site_inventory_constraints_and_round_trip(database_url: str) -> None:
         assert connection.scalar(sa.text("SELECT to_regclass('ingest.site_page')")) is None
     command.upgrade(config, "head")
     with engine.connect() as connection:
-        assert connection.scalar(sa.text("SELECT count(*) FROM ingest.source_adapter")) == 2
+        assert (
+            connection.scalar(
+                sa.text("SELECT count(*) FROM ingest.source_adapter WHERE fetch_method='api'")
+            )
+            == 2
+        )
     engine.dispose()

@@ -3,7 +3,7 @@
 import os
 from datetime import UTC, datetime, timedelta
 
-from airflow.sdk import DAG, dag, get_current_context, task
+from airflow.sdk import DAG, dag, get_current_context, task, task_group
 
 from ingestion.clock import utc_now
 from ingestion.site_jobs import (
@@ -66,13 +66,18 @@ def build_site_dag(dag_id: str, method: str, schedule: str) -> DAG:
         def close_run(context: dict[str, object]) -> None:
             close_site_run(database_url(), context, utc_now)
 
-        configs = configured_targets()
-        opened = open_run.expand(config=configs)
-        fetched = fetch_pages.expand(context=opened)
-        collected = collect_ids.expand(context=fetched)
-        staged = fetch_details.expand(context=collected)
-        parsed = parse_listings.expand(context=staged)
-        close_run.expand(context=parsed)
+        @task_group
+        def ingest_target(config: dict[str, object]) -> None:
+            # Depth-first mapping keeps a failed source/market from blocking every
+            # other target's staging and leaving successful fetches marked running.
+            opened = open_run(config)
+            fetched = fetch_pages(opened)
+            collected = collect_ids(fetched)
+            staged = fetch_details(collected)
+            parsed = parse_listings(staged)
+            close_run(parsed)
+
+        ingest_target.expand(config=configured_targets())
 
     return flow()
 

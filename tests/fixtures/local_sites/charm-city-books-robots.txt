@@ -1,0 +1,3 @@
+User-agent: dotbot
+Disallow: /i/
+Sitemap: https://charmcitybooks.com/sitemap.txt
