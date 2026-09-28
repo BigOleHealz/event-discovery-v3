@@ -13,6 +13,11 @@ test("real Stagehand renders JS through HTTP, isolates profiles, and cleans up f
       return;
     }
     if (request.url === "/hang") return;
+    if (request.url === "/limited") {
+      response.writeHead(429, { "Retry-After": "120", "content-type": "text/html" });
+      response.end("<html><body>Slow down</body></html>");
+      return;
+    }
     response.writeHead(request.url === "/missing" ? 404 : 200, { "content-type": "text/html" });
     response.end(`<!doctype html><html><head><title>Fixture events</title></head><body>
       <main id="events"></main><button class="next" onclick="document.querySelector('main').dataset.page='2'">Next</button><script>
@@ -50,7 +55,7 @@ test("real Stagehand renders JS through HTTP, isolates profiles, and cleans up f
     });
     assert.equal(response.status, 200, await response.clone().text());
     const page = await response.json() as FetchResult;
-    assert.match(page.html, /<article>Local concert/);
+    if (path !== "/missing") assert.match(page.html, /<article>Local concert/);
     assert.doesNotMatch(page.html, /<article>PROFILE LEAK/);
     assert.equal(page.url, `${base}${path === "/redirect" ? "/events" : path}`);
     assert.equal(page.http_status, path === "/missing" ? 404 : 200);
@@ -71,4 +76,12 @@ test("real Stagehand renders JS through HTTP, isolates profiles, and cleans up f
   assert.match(advanced.html, /data-page="2"/);
   assert.equal(closed, launched);
   assert.equal(launched, 6);
+  const limited = await createFetcher(config, launch)({
+    url: `${base}/limited`, ready_selector: "article.never-present",
+    steps: [{ selector: "button.never-present", wait_for_selector: "article", delay_ms: 1 }],
+  });
+  assert.equal(limited.http_status, 429);
+  assert.equal(limited.retry_after, "120");
+  assert.equal(closed, launched);
+  assert.equal(launched, 7);
 });

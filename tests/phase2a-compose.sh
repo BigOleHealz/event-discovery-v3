@@ -9,6 +9,10 @@ set -a
 source "$env_file"
 set +a
 
+# Health checks must not run paid integrations or live scrapers from seeded inventory.
+export COMPOSE_PROJECT_NAME="event-discovery-airflow-health-$$"
+export AIRFLOW_DAGS_PAUSED_AT_CREATION=true
+
 POSTGRES_EXTERNAL_PORT=0
 AIRFLOW_EXTERNAL_PORT=0
 API_EXTERNAL_PORT=0
@@ -18,7 +22,7 @@ export NEO4J_HTTP_EXTERNAL_PORT NEO4J_BOLT_EXTERNAL_PORT
 export POSTGRES_EXTERNAL_PORT AIRFLOW_EXTERNAL_PORT API_EXTERNAL_PORT
 
 cleanup() {
-  docker compose --env-file "$env_file" --file "$compose_file" down
+  docker compose --env-file "$env_file" --file "$compose_file" down --volumes
 }
 trap cleanup EXIT
 
@@ -75,3 +79,8 @@ geocode_tasks=$(
 )
 test "$(printf '%s\n' "$geocode_tasks" | sort | tr '\n' ',')" = \
   "resolve_pending_venues,upsert_canonical_events,"
+
+# Assert the test-only safeguard against live source requests, not just service health.
+docker compose --env-file "$env_file" --file "$compose_file" exec --no-TTY \
+  airflow-api-server python -c \
+  'import os; from sqlalchemy import create_engine, text; engine = create_engine(os.environ["AIRFLOW__DATABASE__SQL_ALCHEMY_CONN"]); connection = engine.connect(); assert connection.scalar(text("SELECT count(*) FROM dag WHERE NOT is_paused")) == 0; assert connection.scalar(text("SELECT count(*) FROM dag WHERE dag_id IN (:browser, :http) AND is_paused"), {"browser": "ingest_site_stagehand", "http": "ingest_site_generic"}) == 2; connection.close(); engine.dispose()'

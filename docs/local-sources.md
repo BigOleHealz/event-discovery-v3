@@ -47,7 +47,8 @@ handling; it does not supply an event-content reuse license or a public event AP
 
 “Reviewed” records an operational review; absence of a prohibition is not a license or
 written permission from the owner. Re-review before widening scope or when policy changes.
-Set `access_policy.status` to `blocked` or disable the adapter to stop future fetches.
+Disable the adapter to stop future fetches. When recording `access_policy.status = blocked`,
+set `enabled = false` in the same update; the database rejects enabled, unreviewed scrapers.
 Do not interpret successful HTTP access alone as an access review.
 
 The production fetch task fails closed for disabled/unreviewed sources or URLs outside
@@ -59,6 +60,9 @@ requests. A reservation also survives a killed worker until request timeout plus
 Workers and markets share this state; cached page replay makes no outbound request.
 Browser asset requests needed to render a page are not individually delayed. These initial
 sources have one listing page and no pagination actions.
+
+See [source-access.md](source-access.md) for the enablement gate, review procedure,
+server-requested backoff and operational inspection added in Phase 8d.
 
 ## Extraction and identity
 

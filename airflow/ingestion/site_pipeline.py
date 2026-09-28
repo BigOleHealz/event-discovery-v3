@@ -16,7 +16,7 @@ from ingestion.clock import Clock
 from ingestion.models import CrawlTarget
 from ingestion.site_extraction import DerivePlan
 from ingestion.site_models import SiteAdapter, http_url
-from ingestion.site_policy import SourcePolicy
+from ingestion.site_policy import RequestPermit, SourcePolicy
 from ingestion.site_repository import PAGE_NAMESPACE, SitePage, SiteRepository
 
 
@@ -82,11 +82,14 @@ class SiteClient:
             guard = (
                 self.policy.request(adapter.source, url, self.config.timeout_seconds)
                 if self.policy
-                else nullcontext(0.0)
+                else nullcontext(RequestPermit(0.0))
             )
-            with guard as interval:
+            with guard as permit:
                 body["steps"] = [
-                    {**step, "delay_ms": max(int(interval * 1000), int(str(step["delay_ms"])))}
+                    {
+                        **step,
+                        "delay_ms": max(int(permit.interval * 1000), int(str(step["delay_ms"]))),
+                    }
                     for step in steps
                 ]
                 response = self.client.post(
@@ -94,22 +97,42 @@ class SiteClient:
                     json=body,
                     headers={"Authorization": f"Bearer {self.config.stagehand_token}"},
                 )
-            response.raise_for_status()
-            data = response.json()
-            if not isinstance(data.get("html"), str) or not isinstance(
-                data.get("http_status"), int
-            ):
-                raise ValueError("Stagehand returned an invalid page response")
-            result = (http_url(data["url"]), data["http_status"], data["html"])
+                if self.policy:
+                    permit.observe(
+                        response.status_code,
+                        response.headers.get("Retry-After"),
+                        self.policy.clock(),
+                    )
+                response.raise_for_status()
+                data = response.json()
+                if not isinstance(data.get("html"), str) or not isinstance(
+                    data.get("http_status"), int
+                ):
+                    raise ValueError("Stagehand returned an invalid page response")
+                if self.policy:
+                    permit.observe(
+                        data["http_status"], data.get("retry_after"), self.policy.clock()
+                    )
+                permit.check_url(data["url"])
+                result = (http_url(data["url"]), data["http_status"], data["html"])
         else:
             current = url
             for _ in range(6):
                 guard = (
                     self.policy.request(adapter.source, current, self.config.timeout_seconds)
                     if self.policy
-                    else nullcontext(0.0)
+                    else nullcontext(RequestPermit(0.0))
                 )
-                with guard, self.client.stream("GET", current, follow_redirects=False) as response:
+                with (
+                    guard as permit,
+                    self.client.stream("GET", current, follow_redirects=False) as response,
+                ):
+                    if self.policy:
+                        permit.observe(
+                            response.status_code,
+                            response.headers.get("Retry-After"),
+                            self.policy.clock(),
+                        )
                     if response.is_redirect:
                         current = same_origin(url, urljoin(current, response.headers["location"]))
                         continue

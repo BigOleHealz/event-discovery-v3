@@ -259,8 +259,8 @@ def test_source_policy_serializes_workers_and_consumes_failed_requests(database_
     clock = FakeClock()
     policy = SourcePolicy(database_url, lambda: clock.now, clock.sleep)
     url = "https://www.philamoca.org/"
-    with policy.request("philamoca", url, 100) as interval:
-        assert interval == 10
+    with policy.request("philamoca", url, 100) as permit:
+        assert permit.interval == 10
         with psycopg.connect(policy.url, autocommit=True) as other:
             assert other.execute(
                 "SELECT pg_try_advisory_lock(hashtextextended('philamoca',81))"
@@ -276,7 +276,7 @@ def test_source_policy_serializes_workers_and_consumes_failed_requests(database_
         with policy.request("philamoca", "https://www.philamoca.org/wp-admin/", 100):
             pytest.fail("unreviewed path fetched")
     with psycopg.connect(policy.url) as connection:
-        connection.execute("""UPDATE ingest.source_adapter SET access_policy=
+        connection.execute("""UPDATE ingest.source_adapter SET enabled=false, access_policy=
             jsonb_set(access_policy,'{status}','\"blocked\"') WHERE source='philamoca'""")
     try:
         with pytest.raises(ValueError, match="no completed access review"):
@@ -284,7 +284,7 @@ def test_source_policy_serializes_workers_and_consumes_failed_requests(database_
                 pytest.fail("blocked source fetched")
     finally:
         with psycopg.connect(policy.url) as connection:
-            connection.execute("""UPDATE ingest.source_adapter SET access_policy=
+            connection.execute("""UPDATE ingest.source_adapter SET enabled=true, access_policy=
                 jsonb_set(access_policy,'{status}','\"reviewed\"') WHERE source='philamoca'""")
 
 

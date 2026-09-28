@@ -14,6 +14,7 @@ export interface FetchResult {
   html: string;
   bytes: number;
   fetch_method: "stagehand";
+  retry_after?: string | undefined;
 }
 
 export class FetchFailure extends Error {
@@ -83,13 +84,16 @@ export function createFetcher(config: Config, launch = browserLauncher(config)):
           waitUntil: "load",
           timeout: config.fetchTimeoutMs,
         });
-        if (request.ready_selector) {
+        // Error pages generally have no listing selector. Return their status and
+        // server backoff immediately so Airflow can persist it for all workers.
+        const failed = response !== null && response.status() >= 400;
+        if (!failed && request.ready_selector) {
           const ready = await page.waitForSelector(request.ready_selector, {
             timeout: config.fetchTimeoutMs,
           });
           if (!ready) throw new FetchFailure("fetch_timeout");
         }
-        for (const step of request.steps ?? []) {
+        for (const step of failed ? [] : request.steps ?? []) {
           await page.waitForTimeout(step.delay_ms);
           await page.locator(step.selector).click();
           if (!await page.waitForSelector(step.wait_for_selector, {
@@ -102,7 +106,10 @@ export function createFetcher(config: Config, launch = browserLauncher(config)):
           return { url: location.href, title: document.title, html: bytes <= maxBytes ? html : null, bytes };
         }, config.maxHtmlBytes);
         if (snapshot.html === null) throw new FetchFailure("page_too_large");
-        return { ...snapshot, html: snapshot.html, http_status: response?.status() ?? null, fetch_method: "stagehand" };
+        return {
+          ...snapshot, html: snapshot.html, http_status: response?.status() ?? null,
+          fetch_method: "stagehand", retry_after: response?.headers()["retry-after"],
+        };
       };
       return await Promise.race([work(), deadline]);
     } catch (error) {

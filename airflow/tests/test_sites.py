@@ -75,7 +75,7 @@ def seed(database_url: str, source: SiteAdapter | None = None) -> SiteAdapter:
             INSERT INTO ingest.source_adapter
                 (source, fetch_method, priority, extraction, pagination, model, prompt_version,
                  enabled)
-            VALUES (%s,%s,5,%s,%s,%s,%s,true)
+            VALUES (%s,%s,5,%s,%s,%s,%s,false)
         """,
             (
                 source.source,
@@ -87,7 +87,7 @@ def seed(database_url: str, source: SiteAdapter | None = None) -> SiteAdapter:
             ),
         )
         connection.execute(
-            """UPDATE ingest.source_adapter SET access_policy=%s,
+            """UPDATE ingest.source_adapter SET enabled=true, access_policy=%s,
                min_request_interval_seconds=1 WHERE source=%s""",
             (
                 Jsonb(
