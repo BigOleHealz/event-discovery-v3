@@ -1,5 +1,6 @@
 import { EventMap } from "./EventMap";
 import { DedupReview } from "./DedupReview";
+import { AccountControls } from "./AccountControls";
 import { loadApiBaseUrl, loadConfig } from "./config";
 import "./styles.css";
 
@@ -30,6 +31,7 @@ export function App() {
         <p className="eyebrow">Philadelphia</p>
         <h1>Find something worth going to.</h1>
       </header>
+      <AccountControls apiBaseUrl={config.apiBaseUrl} />
       <EventMap
         apiBaseUrl={config.apiBaseUrl}
         apiKey={config.googleMapsApiKey}
