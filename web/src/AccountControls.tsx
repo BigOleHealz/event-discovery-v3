@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { InviteInbox } from "./InviteInbox";
+import { EventFeedback } from "./EventFeedback";
 
 interface User {
   id: string;
@@ -23,6 +24,7 @@ export function AccountControls({ apiBaseUrl, onUserChange }: {
 }) {
   const [user, setUser] = useState<User | null>(null);
   const [showInvites, setShowInvites] = useState(false);
+  const [showFeedback, setShowFeedback] = useState(false);
   useEffect(() => { onUserChange?.(user?.id ?? null); }, [user, onUserChange]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -91,6 +93,7 @@ export function AccountControls({ apiBaseUrl, onUserChange }: {
       if (!response.ok) throw new Error("Sign-out failed");
       setUser(null);
       setShowInvites(false);
+      setShowFeedback(false);
       setMessage("");
     } catch {
       setMessage("Unable to sign out. Please try again online.");
@@ -104,7 +107,8 @@ export function AccountControls({ apiBaseUrl, onUserChange }: {
       {loading ? <span role="status">Loading account…</span> : user ? (
         <>
           <span>Signed in as {user.display_name ?? user.email ?? "you"}</span>
-          <button type="button" onClick={() => setShowInvites(true)}>Invitations</button>
+          <button type="button" onClick={() => { setShowFeedback(false); setShowInvites(true); }}>Invitations</button>
+          <button type="button" onClick={() => { setShowInvites(false); setShowFeedback(true); }}>Event feedback</button>
           <button type="button" disabled={busy} onClick={() => { void signOut(); }}>
             {busy ? "Signing out…" : "Sign out"}
           </button>
@@ -113,6 +117,8 @@ export function AccountControls({ apiBaseUrl, onUserChange }: {
       {message && <p role="status">{message}</p>}
       {user && showInvites && <InviteInbox key={user.id} apiBaseUrl={apiBaseUrl}
         onClose={() => setShowInvites(false)} />}
+      {user && showFeedback && <EventFeedback key={user.id} apiBaseUrl={apiBaseUrl}
+        onClose={() => setShowFeedback(false)} />}
     </section>
   );
 }

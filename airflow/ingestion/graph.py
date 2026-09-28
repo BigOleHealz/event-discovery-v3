@@ -118,6 +118,11 @@ SOCIAL_QUERIES = {
                created_at
         FROM attendance WHERE state = 'attending' ORDER BY id
     """,
+    "ATTENDED": """
+        SELECT user_id AS source, canonical_event_id AS target, source AS attendance_source,
+               created_at, rating, feedback_text, feedback_at
+        FROM attendance WHERE state = 'attended' ORDER BY id
+    """,
 }
 
 
@@ -203,6 +208,8 @@ def _replace_graph(
             if relationship == "INVITED_TO"
             else "SET r.created_at = datetime(row.created_at)"
         )
+        if relationship == "ATTENDED":
+            timestamps += " SET r.feedback_at = datetime(row.feedback_at)"
         for offset in range(0, len(rows), 500):
             counts[relationship] += transaction.run(
                 f"""UNWIND $rows AS row

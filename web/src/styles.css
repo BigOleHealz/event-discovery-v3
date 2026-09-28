@@ -679,3 +679,41 @@ a {
 .invite-inbox h3 {
   margin-top: 0;
 }
+
+.feedback-card form,
+.feedback-card form > label {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.feedback-card fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.feedback-ratings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.feedback-ratings label {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-height: 44px;
+}
+
+.feedback-card textarea {
+  width: 100%;
+  min-height: 6rem;
+  padding: 0.6rem;
+  border: 1px solid #c9c4b8;
+  border-radius: 0.5rem;
+  background: #fffdf7;
+  color: inherit;
+  font: inherit;
+  resize: vertical;
+}

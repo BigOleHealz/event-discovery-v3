@@ -82,6 +82,9 @@ def main() -> None:
         migration.attributes["database_url"] = database_url
         command.upgrade(migration, "head")
         # Import after configuring CORS; replay is confined to this test-only server.
+        sys.path.insert(0, str(root / "airflow"))
+        from ingestion.feedback import request_event_feedback
+
         from app.auth import google_oauth
         from app.clock import utc_now
         from app.main import app
@@ -90,18 +93,30 @@ def main() -> None:
         config = auth_config()
         browser_time = datetime(2050, 9, 27, 12, tzinfo=UTC)
         app.dependency_overrides[utc_now] = lambda: browser_time
-        identities = {"auth": replay, "sender": GoogleReplay(), "recipient": GoogleReplay()}
-        for name in ("sender", "recipient"):
-            identities[name].claims.update({
-                "sub": f"invite-{name}", "email": f"{name}@example.com", "name": name.title(),
-            })
+        identities = {
+            "auth": replay,
+            "sender": GoogleReplay(),
+            "recipient": GoogleReplay(),
+            "feedback": GoogleReplay(),
+        }
+        for name in ("sender", "recipient", "feedback"):
+            identities[name].claims.update(
+                {
+                    "sub": f"invite-{name}",
+                    "email": f"{name}@example.com",
+                    "name": name.title(),
+                }
+            )
         engine = create_engine(database_url)
         with engine.begin() as connection:
-            connection.execute(text("""
+            connection.execute(
+                text("""
                 INSERT INTO canonical_event (id, title, starts_at, timezone, location)
                 VALUES ('6b000000-0000-0000-0000-000000000001', 'Invite night', :starts, 'UTC',
                         ST_SetSRID(ST_MakePoint(-75.16,39.95),4326)::geography)
-            """), {"starts": browser_time + timedelta(days=1)})
+            """),
+                {"starts": browser_time + timedelta(days=1)},
+            )
         engine.dispose()
 
         class ReplayedGoogle(GoogleOAuth):
@@ -123,6 +138,35 @@ def main() -> None:
             response = RedirectResponse(config.web_url, status_code=303)
             response.set_cookie("fixture_identity", name, httponly=True, samesite="lax")
             return response
+
+        @app.post("/fixture/finish-feedback-event")
+        def finish_feedback_event() -> dict[str, int]:
+            engine = create_engine(database_url)
+            with engine.begin() as connection:
+                connection.execute(
+                    text("""
+                    INSERT INTO canonical_event (id,title,starts_at,ends_at,timezone,location)
+                    VALUES ('6c000000-0000-0000-0000-000000000001','Yesterday’s show',
+                            :starts,:ends,'UTC',ST_SetSRID(ST_MakePoint(-75.16,39.95),4326)::geography)
+                """),
+                    {
+                        "starts": browser_time - timedelta(days=2),
+                        "ends": browser_time - timedelta(days=1),
+                    },
+                )
+                connection.execute(
+                    text("""
+                    INSERT INTO attendance (id,canonical_event_id,user_id,state,source,created_at)
+                    SELECT '6c000000-0000-0000-0000-000000000002',
+                           '6c000000-0000-0000-0000-000000000001',id,'attending','self_rsvp',:now
+                    FROM app_user WHERE google_sub='invite-feedback'
+                """),
+                    {"now": browser_time - timedelta(days=3)},
+                )
+            engine.dispose()
+            return request_event_feedback(
+                database_url, airflow_run_id="browser-feedback", clock=lambda: browser_time
+            )
 
         @app.get("/fixture/google")
         def fake_google(state: str, redirect_uri: str) -> RedirectResponse:
@@ -152,7 +196,15 @@ def main() -> None:
             )
             wait_ready(web_url, web)
             subprocess.run(
-                ["npm", "run", "test:e2e", "--", "auth.spec.ts", "invites.spec.ts"],
+                [
+                    "npm",
+                    "run",
+                    "test:e2e",
+                    "--",
+                    "auth.spec.ts",
+                    "invites.spec.ts",
+                    "feedback.spec.ts",
+                ],
                 cwd=root / "web",
                 start_new_session=True,
                 check=True,
@@ -166,8 +218,14 @@ def main() -> None:
                     == 1
                 )
                 assert connection.scalar(text("SELECT count(*) FROM invite")) == 1
-                assert connection.scalar(text("SELECT count(*) FROM attendance")) == 1
+                assert connection.scalar(text("SELECT count(*) FROM attendance")) == 2
                 assert connection.scalar(text("SELECT status FROM invite")) == "accepted"
+                assert connection.execute(
+                    text("""
+                    SELECT state,rating,feedback_text FROM attendance
+                    WHERE id='6c000000-0000-0000-0000-000000000002'
+                """)
+                ).one() == ("attended", 4, "Loved the music.")
             engine.dispose()
             assert len(replay.calls) == 4  # Two logins, each exchanging code and reading JWKS.
         finally:
