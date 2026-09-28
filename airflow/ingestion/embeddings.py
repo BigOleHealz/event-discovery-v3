@@ -138,7 +138,8 @@ def embed_pending(database_url: str, client: EmbeddingClient) -> int:
                 JOIN canonical_event AS event ON event.id = sl.canonical_event_id
                 JOIN ingest.run AS run ON run.id = sl.ingestion_run_id
                 JOIN ingest.market AS market ON market.id = run.market_id
-                WHERE sl.embedding IS NULL AND sl.source IN ('eventbrite', 'meetup')
+                WHERE sl.embedding IS NULL AND (sl.source IN ('eventbrite', 'meetup')
+                       OR sl.raw_payload->>'_format' = 'site-v1')
                   AND sl.dedup_state <> 'exact'
                 ORDER BY sl.id
                 LIMIT %s

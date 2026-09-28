@@ -1,0 +1,16 @@
+{
+  "fields": {
+    "source_event_id": "/url",
+    "url": "/url",
+    "title": "/name",
+    "description": null,
+    "starts_at": "/startDate",
+    "ends_at": "/endDate",
+    "venue_name": "/location/name",
+    "venue_address": "/location/address/streetAddress",
+    "venue_city": "/location/address/addressLocality",
+    "venue_region": "/location/address/addressRegion",
+    "venue_country": "/location/address/addressCountry"
+  },
+  "next_selector": "a.tribe-events-c-nav__next"
+}

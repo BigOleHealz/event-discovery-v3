@@ -1,0 +1,65 @@
+{
+  "items": "section.page__section--events > a.event",
+  "empty_selector": null,
+  "next_selector": null,
+  "fields": {
+    "source_event_id": null,
+    "url": {
+      "selector": null,
+      "attribute": "href",
+      "format": null,
+      "parts": null,
+      "split_before": null,
+      "strip_ordinals": false
+    },
+    "title": {
+      "selector": ".event__heading",
+      "attribute": null,
+      "format": null,
+      "parts": [
+        {
+          "selector": ".event__title",
+          "attribute": null,
+          "scope": "card",
+          "own_text": false
+        },
+        {
+          "selector": ".event__support",
+          "attribute": null,
+          "scope": "card",
+          "own_text": false
+        }
+      ],
+      "split_before": null,
+      "strip_ordinals": false
+    },
+    "description": null,
+    "starts_at": {
+      "selector": null,
+      "attribute": null,
+      "format": "%Y-%m-%d %H:%M",
+      "parts": [
+        {
+          "selector": "time.event__date",
+          "attribute": "datetime",
+          "scope": "card",
+          "own_text": false
+        },
+        {
+          "selector": "li.event__detail:has(.event__detail-label:-soup-contains(\"Show\")) time.event__details-value",
+          "attribute": "datetime",
+          "scope": "card",
+          "own_text": false
+        }
+      ],
+      "split_before": null,
+      "strip_ordinals": false
+    },
+    "ends_at": null,
+    "venue_name": null,
+    "venue_address": null,
+    "venue_city": null,
+    "venue_region": null,
+    "venue_country": null
+  }
+}

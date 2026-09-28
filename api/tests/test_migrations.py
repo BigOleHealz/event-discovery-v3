@@ -28,6 +28,9 @@ EXPECTED_TABLES = (
     "saved_search_hit",
 )
 EXPECTED_INGEST_TABLES = {
+    "source_adapter",
+    "extraction_plan",
+    "site_page",
     "crawl_target",
     "event_detail_cache",
     "run",
@@ -126,6 +129,7 @@ def test_migrations_seed_and_constraints(database_url: str) -> None:
                        target.category, target.window_days, target.page_cap, target.enabled
                 FROM ingest.crawl_target AS target
                 JOIN ingest.market AS market ON market.id = target.market_id
+                WHERE target.source IN ('eventbrite', 'meetup')
                 ORDER BY target.source, target.category
                 """
             )

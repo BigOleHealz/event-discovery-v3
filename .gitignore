@@ -31,3 +31,6 @@ test-results/
 .airflow/
 
 PROJECT_PLAN.md
+
+**/*.html
+!tests/fixtures/**/*.html

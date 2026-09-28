@@ -43,7 +43,8 @@ def clean_ingestion_tables(database_url: str) -> Iterator[None]:
     with psycopg.connect(psycopg_url(database_url)) as connection:
         connection.execute(
             """
-            TRUNCATE ingest.event_detail_cache, ingest.geocode_cache, source_listing,
+            TRUNCATE ingest.extraction_plan, ingest.event_detail_cache, ingest.geocode_cache,
+                source_listing,
                 ingest.rejected_listing, ingest.page_fetch, ingest.run,
                 ingest.crawl_target, venue CASCADE;
             INSERT INTO ingest.crawl_target (

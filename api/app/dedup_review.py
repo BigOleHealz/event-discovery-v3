@@ -1,6 +1,5 @@
 """Admin review of ambiguous pairs; decisions and merges commit together."""
 
-import os
 from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
@@ -106,9 +105,9 @@ def merge_events(connection: Connection, event_a: UUID, event_b: UUID) -> None:
     """), {"a": event_a, "b": event_b})
     if conflict:
         raise HTTPException(409, "Merge conflicts with a previous Distinct decision")
-    priority = [source.strip() for source in os.environ.get(
-        "DEDUP_SOURCE_PRIORITY", "eventbrite,meetup"
-    ).split(",") if source.strip()]
+    priority: list[str] = list(connection.execute(text(
+        "SELECT source FROM ingest.source_adapter ORDER BY priority, source"
+    )).scalars())
     rows = connection.execute(text("""
         SELECT canonical_event_id, source FROM source_listing
         WHERE canonical_event_id IN (:a, :b) ORDER BY canonical_event_id, id FOR UPDATE
