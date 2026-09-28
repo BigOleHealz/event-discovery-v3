@@ -15,7 +15,8 @@ def test_local_inventory_and_policy_round_trip(database_url: str) -> None:
             SELECT a.source,a.fetch_method,m.slug,a.min_request_interval_seconds,
                    a.access_policy->>'status',t.enabled,a.enabled
             FROM ingest.source_adapter a JOIN ingest.crawl_target t USING(source)
-            JOIN ingest.market m ON m.id=t.market_id WHERE a.fetch_method <> 'api'
+            JOIN ingest.market m ON m.id=t.market_id
+            WHERE a.source IN ('charm-city-books','philamoca','reads-and-company')
             ORDER BY a.source
         """)
         ).all()
@@ -47,5 +48,5 @@ def test_local_inventory_and_policy_round_trip(database_url: str) -> None:
         )
     command.upgrade(config, "head")
     with engine.connect() as connection:
-        assert connection.scalar(sa.text("SELECT count(*) FROM ingest.source_adapter")) == 5
+        assert connection.scalar(sa.text("SELECT count(*) FROM ingest.source_adapter")) == 8
     engine.dispose()

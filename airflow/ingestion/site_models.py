@@ -63,6 +63,10 @@ class SiteAdapter:
             or not str(self.extraction["instruction"]).strip()
         ):
             raise ValueError("extraction.instruction is required")
+        if self.extraction.get("format") not in (None, "jsonld"):
+            raise ValueError("unsupported extraction format")
+        if not isinstance(self.extraction.get("exclude_midnight", False), bool):
+            raise ValueError("exclude_midnight must be boolean")
         schema = self.extraction.get("schema")
         if not isinstance(schema, dict):
             raise ValueError("extraction.schema must be a JSON schema object")
@@ -101,7 +105,9 @@ class SiteAdapter:
     @property
     def config_hash(self) -> str:
         value = {
-            "engine": "site-plan-v2",
+            "engine": "site-jsonld-v1"
+            if self.extraction.get("format") == "jsonld"
+            else "site-plan-v2",
             "source": self.source,
             "method": self.fetch_method,
             "extraction": self.extraction,

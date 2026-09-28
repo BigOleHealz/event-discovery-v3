@@ -238,7 +238,7 @@ def crawl_site(
             extracted = repository.extract(page, adapter, target.market_timezone, derive, clock)
             appearances += len(extracted.events)
             ids = {str(event["source_event_id"]) for event in extracted.events}
-            if not ids or ids == previous_ids:
+            if (not ids and not extracted.skipped) or (ids and ids == previous_ids):
                 break
             previous_ids = ids
             kind = adapter.pagination["kind"]

@@ -7,6 +7,7 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import datetime
 from typing import cast
 from urllib.parse import urljoin
@@ -16,6 +17,7 @@ import soupsieve
 from bs4 import BeautifulSoup, Tag
 from jsonschema import Draft202012Validator
 
+from ingestion import site_jsonld
 from ingestion.site_models import FIELDS, SiteAdapter, http_url, site_event
 
 FIELD_RULE = {
@@ -145,7 +147,13 @@ class PlanModel:
         soup = BeautifulSoup(html, "html.parser")
         for node in soup(["script", "style", "svg"]):
             node.decompose()
-        if len(str(soup).encode()) > self.max_input_bytes:
+        document = (
+            site_jsonld.model_document(html)
+            if adapter.extraction.get("format") == "jsonld"
+            else str(soup)
+        )
+        structured = adapter.extraction.get("format") == "jsonld"
+        if len(document.encode()) > self.max_input_bytes:
             raise ValueError("page exceeds extraction model input limit")
         response = self.client.post(
             self.endpoint,
@@ -153,12 +161,12 @@ class PlanModel:
             json={
                 "model": adapter.model,
                 "store": False,
-                "instructions": SYSTEM_PROMPT,
+                "instructions": site_jsonld.SYSTEM_PROMPT if structured else SYSTEM_PROMPT,
                 "input": json.dumps(
                     {
                         "extraction": adapter.extraction,
                         "pagination": adapter.pagination,
-                        "html": str(soup),
+                        "html": document,
                     }
                 ),
                 "text": {
@@ -166,7 +174,7 @@ class PlanModel:
                         "type": "json_schema",
                         "name": "extraction_plan",
                         "strict": True,
-                        "schema": PLAN_SCHEMA,
+                        "schema": site_jsonld.PLAN_SCHEMA if structured else PLAN_SCHEMA,
                     }
                 },
             },
@@ -185,7 +193,9 @@ class PlanModel:
         if len(texts) != 1 or not isinstance(body.get("model"), str):
             raise ValueError("model response is missing a plan or provenance (possibly refused)")
         plan = json.loads(texts[0])
-        Draft202012Validator(REPLAY_SCHEMA).validate(plan)
+        Draft202012Validator(site_jsonld.PLAN_SCHEMA if structured else REPLAY_SCHEMA).validate(
+            plan
+        )
         return DerivedPlan(cast(dict[str, object], plan), body["model"])
 
 
@@ -194,6 +204,7 @@ class ReplayResult:
     events: list[dict[str, object]]
     next_url: str | None
     next_selector: str | None
+    skipped: list[dict[str, object]] = dataclass_field(default_factory=list)
 
 
 def replay(
@@ -203,6 +214,9 @@ def replay(
     adapter: SiteAdapter,
     timezone: str,
 ) -> ReplayResult:
+    if adapter.extraction.get("format") == "jsonld":
+        structured_events, skipped = site_jsonld.extract(plan, html, url, adapter, timezone)
+        return pagination_result(plan, html, url, adapter, structured_events, skipped)
     Draft202012Validator(REPLAY_SCHEMA).validate(plan)
     soup = BeautifulSoup(html, "html.parser")
     cards = soup.select(str(plan["items"]))
@@ -266,6 +280,18 @@ def replay(
         validator.validate(event)
         site_event({"_format": "site-v1", "event": event}, market_timezone=timezone)
         events.append(event)
+    return pagination_result(plan, html, url, adapter, events, [])
+
+
+def pagination_result(
+    plan: dict[str, object],
+    html: str,
+    url: str,
+    adapter: SiteAdapter,
+    events: list[dict[str, object]],
+    skipped: list[dict[str, object]],
+) -> ReplayResult:
+    soup = BeautifulSoup(html, "html.parser")
     next_selector = str(plan["next_selector"]) if plan["next_selector"] else None
     next_node = soup.select_one(next_selector) if next_selector else None
     if (
@@ -273,12 +299,12 @@ def replay(
         or next_node.has_attr("disabled")
         or next_node.get("aria-disabled") == "true"
     ):
-        return ReplayResult(events, None, None)
+        return ReplayResult(events, None, None, skipped)
     href = next_node.get("href")
     next_url = http_url(urljoin(url, href)) if isinstance(href, str) else None
     if adapter.pagination["kind"] == "next_link" and next_url is None:
         raise ValueError("next link has no HTTP href")
-    return ReplayResult(events, next_url, next_selector)
+    return ReplayResult(events, next_url, next_selector, skipped)
 
 
 def read_part(rule: dict[str, object], card: Tag, soup: BeautifulSoup) -> str | None:

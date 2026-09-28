@@ -105,7 +105,7 @@ def merge_events(connection: Connection, event_a: UUID, event_b: UUID) -> None:
     """), {"a": event_a, "b": event_b})
     if conflict:
         raise HTTPException(409, "Merge conflicts with a previous Distinct decision")
-    priority = list(connection.execute(text(
+    priority: list[str] = list(connection.execute(text(
         "SELECT source FROM ingest.source_adapter ORDER BY priority, source"
     )).scalars())
     rows = connection.execute(text("""

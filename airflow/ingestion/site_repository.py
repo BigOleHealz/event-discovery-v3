@@ -117,7 +117,8 @@ class SiteRepository:
             )
             completed = connection.execute(
                 """
-                SELECT page.events, page.next_url, page.next_selector, pf.error_message
+                SELECT page.events, page.next_url, page.next_selector, pf.error_message,
+                       page.extraction_skips
                 FROM ingest.site_page page JOIN ingest.page_fetch pf ON pf.id=page.page_fetch_id
                 WHERE page_fetch_id=%s
             """,
@@ -126,7 +127,7 @@ class SiteRepository:
             if completed and completed[3] == "extraction_validation_failed":
                 raise ValueError("site extraction already failed validation for this run")
             if completed and completed[0] is not None:
-                return ReplayResult(completed[0], completed[1], completed[2])
+                return ReplayResult(completed[0], completed[1], completed[2], completed[4])
             cached = connection.execute(
                 """
                 SELECT plan, model FROM ingest.extraction_plan WHERE source=%s AND config_hash=%s
@@ -179,7 +180,7 @@ class SiteRepository:
                 """
                 UPDATE ingest.site_page SET events=%s, next_url=%s, next_selector=%s,
                     extraction_model=%s, prompt_version=%s, cache_hit=%s,
-                    validation_failures=validation_failures+%s
+                    validation_failures=validation_failures+%s, extraction_skips=%s
                 WHERE page_fetch_id=%s
             """,
                 (
@@ -190,6 +191,7 @@ class SiteRepository:
                     adapter.prompt_version,
                     cache_hit,
                     failures,
+                    Jsonb(result.skipped) if result else Jsonb([]),
                     page.id,
                 ),
             )

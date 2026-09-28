@@ -30,7 +30,9 @@ web_address=$(docker compose --env-file "$env_file" --file "$compose_file" port 
 
 api_status=$(curl --fail --silent "http://${api_address}/health")
 test "$api_status" = '{"status":"ok"}'
-events_payload=$(curl --fail --silent "http://${api_address}/api/events")
+# The seed calendar is fixed; do not let the API's default "now" filter age it out.
+events_payload=$(curl --fail --silent \
+  "http://${api_address}/api/events?starts_after=2026-09-01T00:00:00Z")
 feature_count=$(
   EVENTS_PAYLOAD="$events_payload" python3 -c \
     'import json, os; payload = json.loads(os.environ["EVENTS_PAYLOAD"]); print(len(payload["features"]))'

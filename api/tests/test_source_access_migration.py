@@ -42,6 +42,6 @@ def test_enablement_requires_review_and_migration_round_trip(database_url: str) 
     with engine.connect() as connection:
         assert (
             connection.scalar(sa.text("SELECT count(*) FROM ingest.source_adapter WHERE enabled"))
-            == 5
+            == 8
         )
     engine.dispose()
