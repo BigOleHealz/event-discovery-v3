@@ -25,6 +25,9 @@ Properties = dict[str, Property]
 
 # SQL and Cypher identifiers below are constants, never user input.
 NODE_QUERIES = {
+    "User": """
+        SELECT id, display_name, avatar_url, is_shadow FROM app_user ORDER BY id
+    """,
     "CanonicalEvent": """
         SELECT id, title, description, starts_at, ends_at, timezone, venue_id,
                primary_category, recurrence_group_id, created_at, updated_at, archived_at,
@@ -102,6 +105,21 @@ SIMILARITY_QUERY = """
     GROUP BY 1, 2 ORDER BY 1, 2
 """
 
+# Social relationships are rebuilt from canonical state alongside event nodes.
+# UUID arrays are cast to text arrays so sender order survives serialization.
+SOCIAL_QUERIES = {
+    "INVITED_TO": """
+        SELECT to_user_id AS source, canonical_event_id AS target,
+               invited_by::text[] AS invited_by, status, channel, sent_at, responded_at
+        FROM invite WHERE to_user_id IS NOT NULL ORDER BY id
+    """,
+    "ATTENDING": """
+        SELECT user_id AS source, canonical_event_id AS target, source AS attendance_source,
+               created_at
+        FROM attendance WHERE state = 'attending' ORDER BY id
+    """,
+}
+
 
 @dataclass(frozen=True)
 class GraphConfig:
@@ -147,7 +165,9 @@ def _snapshot(connection: psycopg.Connection[tuple[object, ...]]) -> dict[str, l
                     {key: _property(value) for key, value in row.items()}
                     for row in cursor.execute(query).fetchall()
                 ]
-                for label, query in {**NODE_QUERIES, "SIMILAR_TO": SIMILARITY_QUERY}.items()
+                for label, query in {
+                    **NODE_QUERIES, "SIMILAR_TO": SIMILARITY_QUERY, **SOCIAL_QUERIES,
+                }.items()
             }
 
 
@@ -175,6 +195,23 @@ def _replace_graph(
                CREATE (a)-[:SIMILAR_TO {score: row.score}]->(b)""",
             rows=similarities[offset:offset + 500],
         ).consume().counters.relationships_created
+    for relationship in SOCIAL_QUERIES:
+        rows = snapshot[relationship]
+        counts[relationship] = 0
+        timestamps = (
+            "SET r.sent_at = datetime(row.sent_at), r.responded_at = datetime(row.responded_at)"
+            if relationship == "INVITED_TO"
+            else "SET r.created_at = datetime(row.created_at)"
+        )
+        for offset in range(0, len(rows), 500):
+            counts[relationship] += transaction.run(
+                f"""UNWIND $rows AS row
+                    MATCH (u:User {{id: row.source}}), (e:CanonicalEvent {{id: row.target}})
+                    CREATE (u)-[r:{relationship}]->(e)
+                    SET r = row REMOVE r.source, r.target
+                    {timestamps}""",
+                rows=rows[offset:offset + 500],
+            ).consume().counters.relationships_created
     return counts
 
 

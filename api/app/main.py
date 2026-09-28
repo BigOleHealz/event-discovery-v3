@@ -13,6 +13,7 @@ from app.categories import router as categories_router
 from app.dedup_review import router as review_router
 from app.events import router as events_router
 from app.graph import graph_driver
+from app.invites import router as invites_router
 from app.similar_events import router as similar_events_router
 
 
@@ -34,7 +35,7 @@ app = FastAPI(title="Event Discovery API", lifespan=lifespan)
 @app.middleware("http")
 async def private_auth_responses(request: Request, call_next: RequestResponseEndpoint) -> Response:
     response = await call_next(request)
-    if request.url.path == "/api/me" or request.url.path.startswith("/api/auth/"):
+    if request.url.path == "/api/me" or request.url.path.startswith(("/api/auth/", "/api/invites")):
         response.headers["Cache-Control"] = "no-store"
         response.headers["Referrer-Policy"] = "no-referrer"
     return response
@@ -56,6 +57,7 @@ app.include_router(similar_events_router)
 app.include_router(categories_router)
 app.include_router(review_router)
 app.include_router(auth_router)
+app.include_router(invites_router)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])

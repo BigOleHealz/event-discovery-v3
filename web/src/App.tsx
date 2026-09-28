@@ -5,6 +5,7 @@ import { loadApiBaseUrl, loadConfig } from "./config";
 import "./styles.css";
 
 export function App() {
+  const [userId, setUserId] = useState<string | null>(null);
   let config;
   const reviewing = window.location.pathname.replace(/\/$/, "") === "/admin/dedup";
   let apiBaseUrl;
@@ -31,8 +32,9 @@ export function App() {
         <p className="eyebrow">Philadelphia</p>
         <h1>Find something worth going to.</h1>
       </header>
-      <AccountControls apiBaseUrl={config.apiBaseUrl} />
+      <AccountControls apiBaseUrl={config.apiBaseUrl} onUserChange={setUserId} />
       <EventMap
+        userId={userId}
         apiBaseUrl={config.apiBaseUrl}
         apiKey={config.googleMapsApiKey}
         mapId={config.googleMapsMapId}
@@ -40,3 +42,4 @@ export function App() {
     </main>
   );
 }
+import { useState } from "react";

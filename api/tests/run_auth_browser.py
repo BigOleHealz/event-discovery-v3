@@ -8,7 +8,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -16,6 +16,7 @@ import httpx
 import uvicorn
 from alembic import command
 from alembic.config import Config
+from fastapi import Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import create_engine, text
 from testcontainers.community.postgres import PostgresContainer
@@ -82,16 +83,46 @@ def main() -> None:
         command.upgrade(migration, "head")
         # Import after configuring CORS; replay is confined to this test-only server.
         from app.auth import google_oauth
+        from app.clock import utc_now
         from app.main import app
 
         replay = GoogleReplay()
         config = auth_config()
+        browser_time = datetime(2050, 9, 27, 12, tzinfo=UTC)
+        app.dependency_overrides[utc_now] = lambda: browser_time
+        identities = {"auth": replay, "sender": GoogleReplay(), "recipient": GoogleReplay()}
+        for name in ("sender", "recipient"):
+            identities[name].claims.update({
+                "sub": f"invite-{name}", "email": f"{name}@example.com", "name": name.title(),
+            })
+        engine = create_engine(database_url)
+        with engine.begin() as connection:
+            connection.execute(text("""
+                INSERT INTO canonical_event (id, title, starts_at, timezone, location)
+                VALUES ('6b000000-0000-0000-0000-000000000001', 'Invite night', :starts, 'UTC',
+                        ST_SetSRID(ST_MakePoint(-75.16,39.95),4326)::geography)
+            """), {"starts": browser_time + timedelta(days=1)})
+        engine.dispose()
 
         class ReplayedGoogle(GoogleOAuth):
-            def exchange(self, code: str, attempt: OAuthAttempt, now: datetime) -> GoogleIdentity:
-                return replay.provider(config, attempt, now).exchange(code, attempt, now)
+            def __init__(self, identity: str) -> None:
+                super().__init__(config)
+                self.replay = identities[identity]
 
-        app.dependency_overrides[google_oauth] = lambda: ReplayedGoogle(config)
+            def exchange(self, code: str, attempt: OAuthAttempt, now: datetime) -> GoogleIdentity:
+                return self.replay.provider(config, attempt, now).exchange(code, attempt, now)
+
+        def provider(request: Request) -> GoogleOAuth:
+            return ReplayedGoogle(request.cookies.get("fixture_identity", "auth"))
+
+        app.dependency_overrides[google_oauth] = provider
+
+        @app.get("/fixture/identity/{name}")
+        def select_identity(name: str) -> RedirectResponse:
+            assert name in identities
+            response = RedirectResponse(config.web_url, status_code=303)
+            response.set_cookie("fixture_identity", name, httponly=True, samesite="lax")
+            return response
 
         @app.get("/fixture/google")
         def fake_google(state: str, redirect_uri: str) -> RedirectResponse:
@@ -121,7 +152,7 @@ def main() -> None:
             )
             wait_ready(web_url, web)
             subprocess.run(
-                ["npm", "run", "test:e2e", "--", "auth.spec.ts"],
+                ["npm", "run", "test:e2e", "--", "auth.spec.ts", "invites.spec.ts"],
                 cwd=root / "web",
                 start_new_session=True,
                 check=True,
@@ -134,6 +165,9 @@ def main() -> None:
                     )
                     == 1
                 )
+                assert connection.scalar(text("SELECT count(*) FROM invite")) == 1
+                assert connection.scalar(text("SELECT count(*) FROM attendance")) == 1
+                assert connection.scalar(text("SELECT status FROM invite")) == "accepted"
             engine.dispose()
             assert len(replay.calls) == 4  # Two logins, each exchanging code and reading JWKS.
         finally:

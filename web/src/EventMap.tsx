@@ -28,6 +28,7 @@ function configureLoader(apiKey: string): void {
 }
 
 interface EventMapProps {
+  userId?: string | null;
   apiBaseUrl: string;
   apiKey: string;
   mapId: string;
@@ -47,7 +48,7 @@ function categoriesIn(features: EventMapFeature[]): string[] {
   return Array.from(categories).sort();
 }
 
-export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
+export function EventMap({ apiBaseUrl, apiKey, mapId, userId }: EventMapProps) {
   const mapElement = useRef<HTMLDivElement>(null);
   const [filters, setFilters] = useState<EventFilters>(() => readEventFilters());
   const filtersRef = useRef(filters);
@@ -378,6 +379,7 @@ export function EventMap({ apiBaseUrl, apiKey, mapId }: EventMapProps) {
         </button> : null}
       </div>
       <EventDetailPanel apiBaseUrl={apiBaseUrl} event={selectedEvent}
+        userId={userId}
         onClose={closeDetails} onSelect={setSelectedEvent} />
     </section>
   );

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { InviteInbox } from "./InviteInbox";
 
 interface User {
   id: string;
@@ -17,8 +18,12 @@ async function readUser(response: Response): Promise<User> {
   return { id: value.id, email: value.email, display_name: value.display_name };
 }
 
-export function AccountControls({ apiBaseUrl }: { apiBaseUrl: string }) {
+export function AccountControls({ apiBaseUrl, onUserChange }: {
+  apiBaseUrl: string; onUserChange?: (userId: string | null) => void;
+}) {
   const [user, setUser] = useState<User | null>(null);
+  const [showInvites, setShowInvites] = useState(false);
+  useEffect(() => { onUserChange?.(user?.id ?? null); }, [user, onUserChange]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(() =>
@@ -85,6 +90,7 @@ export function AccountControls({ apiBaseUrl }: { apiBaseUrl: string }) {
       });
       if (!response.ok) throw new Error("Sign-out failed");
       setUser(null);
+      setShowInvites(false);
       setMessage("");
     } catch {
       setMessage("Unable to sign out. Please try again online.");
@@ -98,12 +104,15 @@ export function AccountControls({ apiBaseUrl }: { apiBaseUrl: string }) {
       {loading ? <span role="status">Loading account…</span> : user ? (
         <>
           <span>Signed in as {user.display_name ?? user.email ?? "you"}</span>
+          <button type="button" onClick={() => setShowInvites(true)}>Invitations</button>
           <button type="button" disabled={busy} onClick={() => { void signOut(); }}>
             {busy ? "Signing out…" : "Sign out"}
           </button>
         </>
       ) : <a href={`${base}/api/auth/google/start`}>Sign in with Google</a>}
       {message && <p role="status">{message}</p>}
+      {user && showInvites && <InviteInbox key={user.id} apiBaseUrl={apiBaseUrl}
+        onClose={() => setShowInvites(false)} />}
     </section>
   );
 }

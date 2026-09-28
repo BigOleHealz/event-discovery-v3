@@ -146,6 +146,6 @@ jobs:
       - name: Install auth browser dependencies
         run: pip install --requirement api/requirements-dev.txt
 
-      - name: Verify Google sign-in with replayed provider and real Postgres
+      - name: Verify sign-in and invites with replayed provider and real Postgres
         working-directory: api
         run: python tests/run_auth_browser.py
