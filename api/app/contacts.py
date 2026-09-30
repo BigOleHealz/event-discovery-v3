@@ -113,7 +113,8 @@ def import_contacts(
     except ValueError as error:
         raise HTTPException(
             422,
-            "Invalid vCard. Use emails or international +country-code numbers.",
+            "Invalid vCard. Use valid emails or phone numbers without extensions. "
+            "Numbers without a country code default to +1.",
         ) from error
     return {
         "imported": save_contacts(

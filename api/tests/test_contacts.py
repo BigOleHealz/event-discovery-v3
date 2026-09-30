@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import psycopg
 import pytest
-from contact_providers import PeopleReplay, TwilioReplay
+from contact_providers import PeopleReplay
 from fastapi.testclient import TestClient
 from ingestion.contacts import match_contacts_to_users
 from ingestion.graph import GraphConfig, project_to_neo4j
@@ -19,7 +19,6 @@ from app.auth import save_google_user
 from app.contacts import google_contacts
 from app.main import app
 from app.oauth import GoogleIdentity
-from app.sms import twilio_sms
 
 VCARD = """BEGIN:VCARD
 VERSION:3.0
@@ -28,7 +27,7 @@ EMAIL:PERSON2@example.com
 END:VCARD
 BEGIN:VCARD
 VERSION:3.0
-FN:SMS Friend
+FN:Unmatched Friend
 TEL;TYPE=CELL:+1 (415) 555-2671
 END:VCARD
 """
@@ -37,16 +36,12 @@ END:VCARD
 @pytest.fixture
 def contacts_data(invite_data: InviteData, monkeypatch: pytest.MonkeyPatch) -> Iterator[InviteData]:  # noqa: F811
     for key, value in {
-        "TWILIO_ACCOUNT_SID": "ACfixture",
-        "TWILIO_AUTH_TOKEN": "fixture-secret",
-        "TWILIO_FROM_NUMBER": "+15005550006",
-        "TWILIO_MESSAGES_URL": "https://twilio.example.test/Messages.json",
         "GOOGLE_CONTACTS_REDIRECT_URI": "https://api.example.test/api/contacts/google/callback",
         "GOOGLE_PEOPLE_CONNECTIONS_URL": "https://people.example.test/connections",
     }.items():
         monkeypatch.setenv(key, value)
-    # Even a test that accidentally takes the SMS path cannot reach a live provider.
-    app.dependency_overrides[twilio_sms] = TwilioReplay().provider
+    for key in ("ACCOUNT_SID", "AUTH_TOKEN", "FROM_NUMBER", "MESSAGES_URL"):
+        monkeypatch.delenv("TWILIO_" + key, raising=False)
     try:
         yield invite_data
     finally:
@@ -80,7 +75,7 @@ def test_owner_privacy_normalization_and_idempotent_import(contacts_data: Invite
         assert first[1]["phone_e164"] == "+14155552671"
         assert other.get("/api/contacts", params={"owner_user_id": str(data.users[0])}).json() == []
         assert owner.get("/api/contacts").headers["cache-control"] == "no-store"
-        assert owner.get("/api/contacts?q=SMS&limit=1").json() == [first[1]]
+        assert owner.get("/api/contacts?q=Unmatched&limit=1").json() == [first[1]]
         assert owner.get("/api/contacts?offset=1").json() == [first[1]]
         assert (
             other.post(
@@ -117,7 +112,7 @@ def test_owner_privacy_normalization_and_idempotent_import(contacts_data: Invite
     "vcard",
     [
         "garbage",
-        VCARD.replace("+1 (415)", "(415)"),
+        VCARD.replace("+1 (415) 555-2671", "12345"),
         VCARD.replace("PERSON2@example.com", "invalid-email"),
     ],
 )
@@ -127,92 +122,187 @@ def test_invalid_import_is_atomic(contacts_data: InviteData, vcard: str) -> None
         assert client.get("/api/contacts").json() == []
 
 
-def test_routes_matched_in_app_unmatched_sms_and_repeats_once(contacts_data: InviteData) -> None:
+def test_apple_vcard_phone_formats_reimport_and_match(contacts_data: InviteData) -> None:
     data = contacts_data
-    replay = TwilioReplay()
-    app.dependency_overrides[twilio_sms] = replay.provider
+    with data.engine.begin() as conn:
+        conn.execute(
+            text("UPDATE app_user SET phone_e164='+14155552671' WHERE id=:id"),
+            {"id": data.users[2]},
+        )
+    with data.client(0) as client:
+        contact_id = None
+        for phone in ("(415) 555-2671", "1 (415) 555-2671", "+1 (415) 555-2671"):
+            vcard = (
+                "BEGIN:VCARD\r\nVERSION:3.0\r\nPRODID:-//Apple Inc.//iPhone OS//EN\r\n"
+                "N:García;Zoë;;;\r\nFN:Zoë García\r\n"
+                f"item1.TEL;type=CELL;type=VOICE;type=pref:{phone}\r\n"
+                "item1.X-ABLabel:iPhone\r\nEND:VCARD\r\n"
+            )
+            response = client.post("/api/contacts/import", json={"vcard": vcard})
+            assert response.status_code == 200, response.text
+            contacts = client.get("/api/contacts").json()
+            assert len(contacts) == 1
+            contact = contacts[0]
+            assert contact["display_name"] == "Zoë García"
+            assert contact["phone_e164"] == "+14155552671"
+            assert contact["matched_user_id"] == str(data.users[2])
+            if contact_id is not None:
+                assert contact["id"] == contact_id
+            contact_id = contact["id"]
+
+
+def test_matched_contact_and_email_share_one_invite(contacts_data: InviteData) -> None:
+    data = contacts_data
     with data.client(0) as client:
         contacts = imported(client)
         payload = {
             "canonical_event_id": str(data.event),
-            "contact_ids": [c["id"] for c in contacts],
+            "contact_ids": [contacts[0]["id"], contacts[0]["id"]],
+            "emails": ["person2@example.com"],
             "message": "Meet us there",
         }
         first = client.post("/api/invites", json=payload)
         assert first.status_code == 200, first.text
         assert client.post("/api/invites", json=payload).json() == first.json()
-        assert {row["channel"] for row in first.json()} == {"in_app", "sms"}
-        sms = next(row for row in first.json() if row["channel"] == "sms")
-        assert sms["sms_state"] == "submitted"
-        assert sms["to_user_id"] is None
-        assert len(replay.calls) == 1
-        assert replay.calls[0]["To"] == ["+14155552671"]
-        assert f"{CONFIG.web_url}/?event={data.event}" in replay.calls[0]["Body"][0]
-        event = client.get(f"/api/events/{data.event}")
-        assert event.status_code == 200 and event.json()["properties"]["title"] == "Evening jazz"
-        with data.client(1) as other:
-            assert other.get("/api/invites/sent").json() == []
-            assert other.get("/api/invites/received").json() == []
-            assert other.post(f"/api/invites/{sms['id']}/retry-sms").status_code == 409
-        assert len(replay.calls) == 1
-    with pytest.raises(IntegrityError), data.engine.begin() as conn:
-        conn.execute(
-            text("""
-            INSERT INTO invite (id, canonical_event_id, to_contact_id, invited_by)
-            VALUES (:id, :event, :contact, ARRAY[CAST(:sender AS uuid)])
-        """),
-            {
-                "id": uuid4(),
-                "event": data.event,
-                "contact": contacts[1]["id"],
-                "sender": data.users[0],
-            },
+        assert len(first.json()) == 1
+        invite = first.json()[0]
+        assert invite["channel"] == "in_app"
+        assert invite["to_user_id"] == str(data.users[2])
+        assert "sms_state" not in invite
+    with data.client(2) as recipient:
+        accepted = recipient.post(
+            f"/api/invites/{invite['id']}/respond", json={"response": "accept"}
+        )
+        assert accepted.status_code == 200
+        assert accepted.json()["status"] == "accepted"
+    with data.engine.connect() as conn:
+        assert conn.scalar(text("SELECT count(*) FROM sms_delivery")) == 0
+        assert (
+            conn.scalar(
+                text("SELECT state FROM attendance WHERE canonical_event_id=:event"),
+                {"event": data.event},
+            )
+            == "attending"
         )
 
 
-@pytest.mark.parametrize("timeout", [False, True])
-def test_sms_failure_retry_and_ambiguous_delivery(contacts_data: InviteData, timeout: bool) -> None:
+@pytest.mark.parametrize("phone", [None, "+14155552671"])
+def test_unmatched_contact_rejects_entire_batch(
+    contacts_data: InviteData, phone: str | None
+) -> None:
     data = contacts_data
-    replay = TwilioReplay()
-    replay.timeout = timeout
-    replay.status = 400
-    app.dependency_overrides[twilio_sms] = replay.provider
     with data.client(0) as client:
-        payload = {"canonical_event_id": str(data.event), "phones": ["+14155552671"]}
-        first = client.post("/api/invites", json=payload)
-        assert first.status_code == 200, first.text
-        invite = first.json()[0]
-        assert invite["sms_state"] == ("unknown" if timeout else "failed")
-        assert client.post("/api/invites", json=payload).json() == first.json()
-        assert len(replay.calls) == 1
-        replay.status = 201
-        response = client.post(f"/api/invites/{invite['id']}/retry-sms")
-        assert response.status_code == (409 if timeout else 200)
-        assert len(replay.calls) == (1 if timeout else 2)
-        if not timeout:
-            assert response.json()["sms_state"] == "submitted"
+        response = client.post(
+            "/api/contacts/import",
+            json={"contacts": [{"email": "unregistered@example.com", "phone_e164": phone}]},
+        )
+        assert response.status_code == 200, response.text
+        contact = client.get("/api/contacts").json()[0]
+        response = client.post(
+            "/api/invites",
+            json={
+                "canonical_event_id": str(data.event),
+                "emails": ["person2@example.com"],
+                "contact_ids": [contact["id"]],
+            },
+        )
+        assert response.status_code == 422
+        assert client.get("/api/invites/sent").json() == []
+    with data.engine.connect() as conn:
+        assert conn.scalar(text("SELECT count(*) FROM sms_delivery")) == 0
 
 
-def test_concurrent_phone_invites_claim_single_sms(contacts_data: InviteData) -> None:
-    replay = TwilioReplay()
-    app.dependency_overrides[twilio_sms] = replay.provider
+def test_concurrent_contact_invites_append_both_senders(contacts_data: InviteData) -> None:
+    data = contacts_data
+    contact_ids = []
+    for sender in (0, 1):
+        with data.client(sender) as client:
+            contact_ids.append(imported(client)[0]["id"])
 
-    def send(_: int) -> list[dict[str, object]]:
-        with contacts_data.client(0) as client:
+    def send(sender: int) -> dict[str, object]:
+        with data.client(sender) as client:
             response = client.post(
                 "/api/invites",
                 json={
-                    "canonical_event_id": str(contacts_data.event),
-                    "phones": ["+14155552671"],
+                    "canonical_event_id": str(data.event),
+                    "contact_ids": [contact_ids[sender]],
                 },
             )
             assert response.status_code == 200, response.text
-            return list(response.json())
+            return dict(response.json()[0])
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         first, second = pool.map(send, [0, 1])
-    assert first[0]["id"] == second[0]["id"]
-    assert len(replay.calls) == 1
+    assert first["id"] == second["id"]
+    with data.client(2) as recipient:
+        invites = recipient.get("/api/invites/received").json()
+        assert len(invites) == 1
+        assert set(invites[0]["invited_by"]) == {str(data.users[0]), str(data.users[1])}
+
+
+def test_legacy_sms_history_is_private_inert_and_unique(contacts_data: InviteData) -> None:
+    data = contacts_data
+    invite_id = uuid4()
+    with data.client(0) as owner:
+        contact = imported(owner)[1]
+        with data.engine.begin() as conn:
+            conn.execute(
+                text("""
+                INSERT INTO invite (id, canonical_event_id, to_contact_id, invited_by, channel)
+                VALUES (:id, :event, :contact, ARRAY[CAST(:sender AS uuid)], 'sms')
+            """),
+                {
+                    "id": invite_id,
+                    "event": data.event,
+                    "contact": contact["id"],
+                    "sender": data.users[0],
+                },
+            )
+            conn.execute(
+                text("""
+                INSERT INTO sms_delivery (invite_id,phone_e164,body,state)
+                VALUES (:id,'+14155552671','Historical body','pending')
+            """),
+                {"id": invite_id},
+            )
+        history = owner.get("/api/invites/sent").json()
+        assert len(history) == 1 and history[0]["id"] == str(invite_id)
+        assert history[0]["channel"] == "sms"
+        assert not {"sms_state", "phone_e164", "body"} & history[0].keys()
+        assert owner.post(f"/api/invites/{invite_id}/retry-sms").status_code == 404
+        assert (
+            owner.post(
+                "/api/invites",
+                json={
+                    "canonical_event_id": str(data.event),
+                    "emails": ["person2@example.com"],
+                },
+            ).status_code
+            == 200
+        )
+    with data.client(1) as other:
+        assert other.get("/api/invites/sent").json() == []
+        assert other.get("/api/invites/received").json() == []
+        assert (
+            other.post(f"/api/invites/{invite_id}/respond", json={"response": "accept"}).status_code
+            == 404
+        )
+    with data.engine.connect() as conn:
+        assert conn.execute(
+            text("""
+            SELECT phone_e164,body,state,provider_sid,attempted_at
+            FROM sms_delivery WHERE invite_id=:id
+        """),
+            {"id": invite_id},
+        ).one() == ("+14155552671", "Historical body", "pending", None, None)
+    with pytest.raises(IntegrityError), data.engine.begin() as conn:
+        conn.execute(
+            text("""
+            INSERT INTO invite (id,canonical_event_id,to_contact_id,invited_by)
+            VALUES (:id,:event,:contact,ARRAY[CAST(:sender AS uuid)])
+        """),
+            {"id": uuid4(), "event": data.event, "contact": contact["id"], "sender": data.users[0]},
+        )
 
 
 def test_google_consent_pages_and_browser_owner_binding(contacts_data: InviteData) -> None:
@@ -332,11 +422,7 @@ def test_matching_failure_rolls_back_and_retry_repairs_audit(
         ).one() == ("success", None)
 
 
-def test_missing_sms_config_does_not_partially_send(
-    contacts_data: InviteData,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("TWILIO_AUTH_TOKEN")
+def test_obsolete_phone_payload_does_not_partially_send(contacts_data: InviteData) -> None:
     with contacts_data.client(0) as client:
         result = client.post(
             "/api/invites",
@@ -346,7 +432,7 @@ def test_missing_sms_config_does_not_partially_send(
                 "phones": ["+14155552671"],
             },
         )
-        assert result.status_code == 503
+        assert result.status_code == 422
         assert client.get("/api/invites/sent").json() == []
         assert client.get("/api/contacts").json() == []
 

@@ -1,19 +1,23 @@
 # In-app invites (6b)
 
-Sign in, open an event, enter up to 20 registered account emails and an optional message,
-and send. The account's **Invitations** button opens Received and Sent lists. Recipients
+Sign in, open an event, choose matched contacts or enter up to 20 registered account emails,
+add an optional message, and send. The account's **Invitations** button opens Received and Sent lists. Recipients
 can accept or decline, and senders can refresh Sent to see the response. Invite/account
 responses use credentialed requests and `no-store`; private data never enters the public
 map cache. Signing out removes the inbox and event invite form.
 
 This sub-phase routes to existing, non-shadow Google accounts. Unknown emails reject the
-whole batch; no partial send occurs. Contact selection and SMS delivery belong to 6d,
-shadow acceptance and claim merging to 6d.1, and map attendance badges to 6e.
+whole batch; no partial send occurs. Contact selection is available in 6d. Share links with
+signed-in acceptance belong to 6d.1, and map attendance badges to 6e. Provider-sent SMS and social shadow accounts
+are deferred beyond v1.
 
 ## API
 
-- `POST /api/invites`: `{canonical_event_id, emails: [...], message?: string}`. Emails are
-  validated and deduplicated after case normalization. Only future, unarchived events
+- `POST /api/invites`: `{canonical_event_id, emails?: [...], contact_ids?: [...], message?: string}`. Emails are
+  validated and deduplicated after case normalization. Contact ids must belong to the
+  sender and match registered users; an unmatched contact rejects the entire batch.
+  Emails and contacts are deduplicated by recipient. The combined limit is 20 selections.
+  Unknown fields (including the former `phones` field) are rejected. Only future, unarchived events
   accept new invitations. The authenticated user is the sender; clients cannot choose it.
 - `GET /api/invites/received`: only rows addressed to the authenticated user.
 - `GET /api/invites/sent`: only rows whose `invited_by` array contains that user.

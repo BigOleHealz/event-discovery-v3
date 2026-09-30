@@ -20,8 +20,7 @@ export function InviteForm({ apiBaseUrl, eventId }: { apiBaseUrl: string; eventI
     try {
       const addresses = emails.split(",").map((value) => value.trim()).filter(Boolean);
       const invites = await sendInvites(apiBaseUrl, eventId,
-        addresses.filter((value) => value.includes("@")), message, controller.signal,
-        selected, addresses.filter((value) => !value.includes("@")));
+        addresses, message, controller.signal, selected);
       if (!controller.signal.aborted) {
         setStatus(`${invites.length} ${invites.length === 1 ? "invitation saved" : "invitations saved"}. Check Sent for responses.`);
         setEmails("");
@@ -42,11 +41,11 @@ export function InviteForm({ apiBaseUrl, eventId }: { apiBaseUrl: string; eventI
         onClick={() => setShowContacts((value) => !value)}>Choose contacts ({selected.length} selected)</button>
       {showContacts && <ContactList apiBaseUrl={apiBaseUrl} selected={selected} disabled={busy}
         onToggle={(id) => setSelected((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])} />}
-      <label>Friends’ emails or phone numbers
-        <input type="text" required={selected.length === 0} value={emails} disabled={busy}
+      <label>Friends’ account emails
+        <input type="email" multiple required={selected.length === 0} value={emails} disabled={busy}
           onChange={(event) => setEmails(event.target.value)} />
       </label>
-      <p className="detail-muted">Separate addresses with commas. Use registered emails or international +country-code numbers. Unmatched numbers receive an SMS.</p>
+      <p className="detail-muted">Separate emails with commas. Only friends with an account can receive in-app invitations.</p>
       <label>Message (optional)
         <textarea maxLength={1000} value={message} disabled={busy}
           onChange={(event) => setMessage(event.target.value)} />

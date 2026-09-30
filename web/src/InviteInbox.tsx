@@ -1,6 +1,6 @@
 import { createPortal } from "react-dom";
 import { useEffect, useRef, useState } from "react";
-import { listInvites, respondToInvite, retrySMS, type Invite } from "./invites";
+import { listInvites, respondToInvite, type Invite } from "./invites";
 
 export function InviteInbox({ apiBaseUrl, onClose }: { apiBaseUrl: string; onClose: () => void }) {
   const [kind, setKind] = useState<"received" | "sent">("received");
@@ -39,14 +39,13 @@ export function InviteInbox({ apiBaseUrl, onClose }: { apiBaseUrl: string; onClo
     return () => controller.abort();
   }, [apiBaseUrl, kind, offset, version]);
 
-  async function respond(id: string, response: "accept" | "decline" | "retry") {
+  async function respond(id: string, response: "accept" | "decline") {
     const controller = new AbortController();
     mutation.current = controller;
     setBusy(true);
     setError("");
     try {
-      const updated = response === "retry" ? await retrySMS(apiBaseUrl, id, controller.signal) :
-        await respondToInvite(apiBaseUrl, id, response, controller.signal);
+      const updated = await respondToInvite(apiBaseUrl, id, response, controller.signal);
       if (!controller.signal.aborted) setItems((current) => current.map((item) => item.id === id ? updated : item));
     } catch (reason: unknown) {
       if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Unable to respond.");
@@ -74,14 +73,7 @@ export function InviteInbox({ apiBaseUrl, onClose }: { apiBaseUrl: string; onClo
         <p>{kind === "received" ? `From ${invite.inviter_names.join(", ")}` : `To ${invite.recipient_name ?? "your friend"}`}</p>
         {invite.message && <p>{invite.message}</p>}
         <p role="status">{invite.status === "accepted" ? (kind === "received" ? "Accepted — you’re going" : "Accepted") : invite.status === "declined" ? "Declined" : "Pending"}</p>
-        {kind === "sent" && invite.channel === "sms" && <div>
-          <p>{invite.sms_state === "submitted" ? "SMS submitted for delivery" :
-            invite.sms_state === "failed" ? "SMS failed. You can retry." :
-            invite.sms_state === "pending" ? "SMS waiting to send" :
-            "SMS delivery is unconfirmed. Check with your friend before sending again."}</p>
-          {(invite.sms_state === "failed" || invite.sms_state === "pending") &&
-            <button type="button" disabled={busy} onClick={() => { void respond(invite.id, "retry"); }}>Retry SMS</button>}
-        </div>}
+        {kind === "sent" && invite.channel === "sms" && <p>Past SMS invitation</p>}
         {kind === "received" && <div className="invite-response">
           <button type="button" disabled={busy || invite.status === "accepted"}
             onClick={() => { void respond(invite.id, "accept"); }}>Accept</button>

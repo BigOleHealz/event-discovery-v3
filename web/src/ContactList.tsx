@@ -33,10 +33,10 @@ export function ContactList({ apiBaseUrl, selected, onToggle, disabled = false }
       {contacts.length === 0 && <p>No contacts found. Import contacts from your account menu.</p>}
       <ul>{contacts.map((contact) => <li key={contact.id}>
         <label>{onToggle && <input type="checkbox" checked={selected?.includes(contact.id) ?? false}
-          disabled={disabled || (!contact.matched_user_id && !contact.phone_e164)}
+          disabled={disabled || !contact.matched_user_id}
           onChange={() => onToggle(contact.id)} />}
           <span>{contact.display_name ?? contact.email ?? contact.phone_e164}
-            <small>{contact.phone_e164 ?? contact.email} · {contact.matched_user_id ? "In app" : contact.phone_e164 ? "SMS" : "Needs a phone number"}</small>
+            <small>{contact.phone_e164 ?? contact.email} · {contact.matched_user_id ? "In app" : "No matching account"}</small>
           </span>
         </label>
       </li>)}</ul>

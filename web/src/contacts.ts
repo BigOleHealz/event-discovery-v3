@@ -12,7 +12,7 @@ export async function contactsRequest(base: string, path: string, init: RequestI
   });
   if (!response.ok) {
     if (response.status === 401) throw new Error("Your session expired. Sign in again.");
-    if (response.status === 422) throw new Error("Use a vCard with emails or international numbers including +country code (up to 2,000 addresses).");
+    if (response.status === 422) throw new Error("Use a vCard with valid emails or phone numbers without extensions (up to 2,000 addresses). Numbers without a country code default to +1.");
     throw new Error("Unable to load or import contacts. Please try again.");
   }
   return response.json() as Promise<unknown>;

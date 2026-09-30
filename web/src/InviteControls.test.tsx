@@ -18,7 +18,7 @@ describe("invitation controls", () => {
     const fetch = vi.fn().mockResolvedValue(Response.json([invite]));
     vi.stubGlobal("fetch", fetch);
     render(<InviteForm apiBaseUrl="https://api.example.test" eventId="event-one" />);
-    fireEvent.change(screen.getByLabelText("Friends’ emails or phone numbers"), {
+    fireEvent.change(screen.getByLabelText("Friends’ account emails"), {
       target: { value: "one@example.com, two@example.com" },
     });
     fireEvent.change(screen.getByLabelText("Message (optional)"), { target: { value: "Join us!" } });
@@ -26,18 +26,18 @@ describe("invitation controls", () => {
     await screen.findByText("1 invitation saved. Check Sent for responses.");
     expect(fetch).toHaveBeenCalledWith("https://api.example.test/api/invites", expect.objectContaining({
       method: "POST", credentials: "include", cache: "no-store",
-      body: JSON.stringify({ canonical_event_id: "event-one", emails: ["one@example.com", "two@example.com"], contact_ids: [], phones: [], message: "Join us!" }),
+      body: JSON.stringify({ canonical_event_id: "event-one", emails: ["one@example.com", "two@example.com"], contact_ids: [], message: "Join us!" }),
     }));
-    expect(screen.getByLabelText("Friends’ emails or phone numbers")).toHaveValue("");
+    expect(screen.getByLabelText("Friends’ account emails")).toHaveValue("");
   });
 
   it("keeps the draft when an unmatched account is rejected", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 422 })));
     render(<InviteForm apiBaseUrl="https://api.example.test" eventId="event-one" />);
-    fireEvent.change(screen.getByLabelText("Friends’ emails or phone numbers"), { target: { value: "unknown@example.com" } });
+    fireEvent.change(screen.getByLabelText("Friends’ account emails"), { target: { value: "unknown@example.com" } });
     fireEvent.click(screen.getByRole("button", { name: "Send invites" }));
-    await screen.findByText("Use registered emails, international +country-code phone numbers, or your imported contacts. Exclude yourself.");
-    expect(screen.getByLabelText("Friends’ emails or phone numbers")).toHaveValue("unknown@example.com");
+    await screen.findByText("Use registered emails or contacts with an account. Exclude yourself.");
+    expect(screen.getByLabelText("Friends’ account emails")).toHaveValue("unknown@example.com");
     expect(screen.getByRole("button", { name: "Send invites" })).toBeEnabled();
   });
 

@@ -23,7 +23,7 @@ from testcontainers.community.postgres import PostgresContainer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from contact_providers import PeopleReplay, TwilioReplay  # noqa: E402
+from contact_providers import PeopleReplay  # noqa: E402
 from oauth_fixture import GoogleReplay  # noqa: E402
 
 from app.oauth import GoogleIdentity, GoogleOAuth, OAuthAttempt, auth_config  # noqa: E402
@@ -59,6 +59,8 @@ def main() -> None:
         with listener() as web_socket:
             web_port = web_socket.getsockname()[1]
         web_url = f"http://127.0.0.1:{web_port}"
+        for key in ("ACCOUNT_SID", "AUTH_TOKEN", "FROM_NUMBER", "MESSAGES_URL"):
+            os.environ.pop("TWILIO_" + key, None)
         os.environ.update(
             {
                 "DATABASE_URL": database_url,
@@ -66,10 +68,6 @@ def main() -> None:
                 "PUBLIC_WEB_BASE_URL": web_url,
                 "GOOGLE_CONTACTS_REDIRECT_URI": api_url + "/api/contacts/google/callback",
                 "GOOGLE_PEOPLE_CONNECTIONS_URL": "https://people.example.test/connections",
-                "TWILIO_ACCOUNT_SID": "ACfixture",
-                "TWILIO_AUTH_TOKEN": "fixture-token",
-                "TWILIO_FROM_NUMBER": "+15005550006",
-                "TWILIO_MESSAGES_URL": "https://twilio.example.test/Messages.json",
                 "GOOGLE_CLIENT_ID": "fixture-client",
                 "GOOGLE_CLIENT_SECRET": "fixture-secret",
                 "GOOGLE_OAUTH_REDIRECT_URI": api_url + "/api/auth/google/callback",
@@ -96,12 +94,10 @@ def main() -> None:
         from app.clock import utc_now
         from app.contacts import google_contacts
         from app.main import app
-        from app.sms import twilio_sms
 
         people = PeopleReplay()
-        sms = TwilioReplay()
+        people.email = "friend@example.com"
         app.dependency_overrides[google_contacts] = people.provider
-        app.dependency_overrides[twilio_sms] = sms.provider
         replay = GoogleReplay()
         config = auth_config()
         browser_time = datetime(2050, 9, 27, 12, tzinfo=UTC)
@@ -112,8 +108,9 @@ def main() -> None:
             "recipient": GoogleReplay(),
             "feedback": GoogleReplay(),
             "contacts": GoogleReplay(),
+            "friend": GoogleReplay(),
         }
-        for name in ("sender", "recipient", "feedback", "contacts"):
+        for name in ("sender", "recipient", "feedback", "contacts", "friend"):
             identities[name].claims.update(
                 {
                     "sub": f"invite-{name}",
@@ -127,7 +124,9 @@ def main() -> None:
                 text("""
                 INSERT INTO canonical_event (id, title, starts_at, timezone, location)
                 VALUES ('6b000000-0000-0000-0000-000000000001', 'Invite night', :starts, 'UTC',
-                        ST_SetSRID(ST_MakePoint(-75.16,39.95),4326)::geography)
+                        ST_SetSRID(ST_MakePoint(-75.16,39.95),4326)::geography),
+                       ('6d000000-0000-0000-0000-000000000001', 'Contact night', :starts, 'UTC',
+                        ST_SetSRID(ST_MakePoint(-75.17,39.96),4326)::geography)
             """),
                 {"starts": browser_time + timedelta(days=1)},
             )
@@ -197,10 +196,6 @@ def main() -> None:
                 status_code=303,
             )
 
-        @app.get("/fixture/sms")
-        def captured_sms() -> list[dict[str, list[str]]]:
-            return sms.calls
-
         server = uvicorn.Server(uvicorn.Config(app, log_level="warning", access_log=False))
         thread = threading.Thread(target=server.run, kwargs={"sockets": [api_socket]}, daemon=True)
         thread.start()
@@ -237,10 +232,16 @@ def main() -> None:
                     == 1
                 )
                 assert connection.scalar(text("SELECT count(*) FROM invite")) == 2
-                assert connection.scalar(text("SELECT count(*) FROM attendance")) == 2
+                assert connection.scalar(text("SELECT count(*) FROM sms_delivery")) == 0
+                assert connection.scalar(text("SELECT count(*) FROM attendance")) == 3
                 assert (
-                    connection.scalar(text("SELECT status FROM invite WHERE channel='in_app'"))
-                    == "accepted"
+                    connection.scalar(
+                        text(
+                            "SELECT count(*) FROM invite "
+                            "WHERE channel='in_app' AND status='accepted'"
+                        )
+                    )
+                    == 2
                 )
                 assert connection.execute(
                     text("""
@@ -249,7 +250,6 @@ def main() -> None:
                 """)
                 ).one() == ("attended", 4, "Loved the music.")
             engine.dispose()
-            assert len(sms.calls) == 1
             assert len(people.calls) == 3
             assert len(replay.calls) == 4  # Two logins, each exchanging code and reading JWKS.
         finally:

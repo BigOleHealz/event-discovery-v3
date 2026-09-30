@@ -24,7 +24,7 @@ test("a friend receives an invite and the sender sees acceptance", async ({ brow
     await signIn(recipient, "recipient");
     await signIn(sender, "sender");
     await sender.locator('[data-event-marker="6b000000-0000-0000-0000-000000000001"]').click();
-    await sender.getByLabel("Friends’ emails or phone numbers").fill("recipient@example.com");
+    await sender.getByLabel("Friends’ account emails").fill("recipient@example.com");
     await sender.getByLabel("Message (optional)").fill("See you there!");
     await sender.getByRole("button", { name: "Send invites" }).click();
     await expect(sender.getByText("1 invitation saved. Check Sent for responses.")).toBeVisible();

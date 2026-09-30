@@ -1,4 +1,4 @@
-"""Bounded contact parsing. International numbers avoid guessing a user's country."""
+"""Bounded contact parsing. Numbers without a country code default to +1."""
 
 import phonenumbers
 import vobject  # type: ignore[import-untyped]
@@ -7,12 +7,15 @@ from pydantic import BaseModel, EmailStr, Field, field_validator, model_validato
 
 def normalize_phone(value: str) -> str:
     try:
-        phone = phonenumbers.parse(value.removeprefix("tel:"), None)
+        # US parsing supplies the +1 default; explicit international codes still win.
+        phone = phonenumbers.parse(value.strip().removeprefix("tel:"), "US")
         if phone.extension or not phonenumbers.is_valid_number(phone):
             raise ValueError("Invalid phone number")
         return str(phonenumbers.format_number(phone, phonenumbers.PhoneNumberFormat.E164))
     except phonenumbers.NumberParseException as error:
-        raise ValueError("Use an international phone number, including +country code") from error
+        raise ValueError(
+            "Use a valid phone number; numbers without a country code default to +1"
+        ) from error
 
 
 class ContactInput(BaseModel):

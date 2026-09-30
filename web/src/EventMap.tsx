@@ -65,6 +65,7 @@ export function EventMap({ apiBaseUrl, apiKey, mapId, userId }: EventMapProps) {
   const [features, setFeatures] = useState<EventMapFeature[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<EventFeature | null>(null);
+  const linkedEventId = useRef<string | null>(null);
   useEffect(() => {
     const eventId = new URLSearchParams(window.location.search).get("event");
     if (!eventId) return;
@@ -77,7 +78,10 @@ export function EventMap({ apiBaseUrl, apiKey, mapId, userId }: EventMapProps) {
         if (!response.ok) throw new Error("This event is no longer available.");
         const value: unknown = await response.json();
         if (!isEventFeature(value)) throw new Error("Unable to open this event.");
-        if (!controller.signal.aborted) setSelectedEvent(value);
+        if (!controller.signal.aborted) {
+          linkedEventId.current = value.id;
+          setSelectedEvent(value);
+        }
       } catch (reason: unknown) {
         if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Unable to open event.");
       }
@@ -85,8 +89,12 @@ export function EventMap({ apiBaseUrl, apiKey, mapId, userId }: EventMapProps) {
     void loadLinkedEvent();
     return () => controller.abort();
   }, [apiBaseUrl]);
-  const closeDetails = useCallback(() => setSelectedEvent(null), []);
+  const closeDetails = useCallback(() => {
+    linkedEventId.current = null;
+    setSelectedEvent(null);
+  }, []);
   const changeFilters = useCallback((nextFilters: EventFilters) => {
+    linkedEventId.current = null;
     setSelectedEvent(null);
     setFilters(nextFilters);
   }, []);
@@ -147,7 +155,7 @@ export function EventMap({ apiBaseUrl, apiKey, mapId, userId }: EventMapProps) {
       setFeatures(nextEvents);
       setSelectedEvent((current) => nextEvents.find(
         (event): event is EventFeature => !isAggregatedGridCell(event) && event.id === current?.id,
-      ) ?? null);
+      ) ?? (current?.id === linkedEventId.current ? current : null));
       const discoveredCategories = categoriesIn(nextEvents);
       if (discoveredCategories.length > 0) {
         setAvailableCategories((currentCategories) => {
@@ -222,7 +230,8 @@ export function EventMap({ apiBaseUrl, apiKey, mapId, userId }: EventMapProps) {
       if (requestKey !== renderedRequest) {
         clearMarkers();
         setFeatures([]);
-        setSelectedEvent(null);
+        // A linked event is independent of the map's initial viewport request.
+        setSelectedEvent((current) => current?.id === linkedEventId.current ? current : null);
         setEventCount(null);
       }
       try {
@@ -245,7 +254,7 @@ export function EventMap({ apiBaseUrl, apiKey, mapId, userId }: EventMapProps) {
         ) {
           clearMarkers();
           setFeatures([]);
-          setSelectedEvent(null);
+          setSelectedEvent((current) => current?.id === linkedEventId.current ? current : null);
           setEventCount(null);
           renderedRequest = null;
           setStale(false);
@@ -297,7 +306,7 @@ export function EventMap({ apiBaseUrl, apiKey, mapId, userId }: EventMapProps) {
           renderedRequest = null;
           clearMarkers();
           setFeatures([]);
-          setSelectedEvent(null);
+          setSelectedEvent((current) => current?.id === linkedEventId.current ? current : null);
           setEventCount(null);
           if (viewportTimer !== null) clearTimeout(viewportTimer);
           viewportTimer = setTimeout(() => {

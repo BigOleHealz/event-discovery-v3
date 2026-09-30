@@ -44,13 +44,26 @@ export function ContactsPanel({ apiBaseUrl, onClose }: { apiBaseUrl: string; onC
     <h2>Contacts</h2>
     <p>Import your friends to send invitations. Contacts are private to your account.</p>
     <a href={`${apiBaseUrl.replace(/\/$/, "")}/api/contacts/google/start`}>Import Google Contacts</a>
+    <details>
+      <summary>Import iPhone/iCloud contacts</summary>
+      <ol>
+        <li>On your iPhone, open Contacts and tap Lists.</li>
+        <li>Press and hold your iCloud list, then tap Export.</li>
+        <li>Include names, phone numbers, and email addresses, then tap Done.</li>
+        <li>Choose Save to Files, then upload the saved .vcf file below.</li>
+      </ol>
+      <p>You can also export a vCard from iCloud.com Contacts on a tablet or computer.</p>
+      <a href="https://support.apple.com/guide/iphone/export-contacts-iph075ddebf2/ios"
+        target="_blank" rel="noreferrer">Apple’s contact export instructions</a>
+      <p>This imports a copy of your contacts. To update them later, export and import again.</p>
+    </details>
     <label>Import vCard (.vcf)<input type="file" accept=".vcf,text/vcard" disabled={busy}
       onChange={(event) => {
         const file = event.target.files?.[0];
         if (file) void importFile(file);
         event.target.value = "";
       }} /></label>
-    <p>Phone numbers need an international +country code.</p>
+    <p>Numbers without a country code default to +1 (US/Canada and other +1 regions). For other countries, include + and the country code. Include the area code; extensions are not supported.</p>
     {busy && <p role="status">Importing contacts…</p>}
     {status && <p role="status">{status}</p>}
     <ContactList key={version} apiBaseUrl={apiBaseUrl} />

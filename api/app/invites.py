@@ -5,30 +5,24 @@ from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 from sqlalchemy import text
 
-from app.auth import Clock, Config, CurrentUser, Database, require_browser_origin
-from app.contact_import import normalize_phone
-from app.sms import TwilioSMS, sms_config, twilio_sms
+from app.auth import Clock, CurrentUser, Database, require_browser_origin
 
 router = APIRouter(prefix="/api/invites", tags=["invites"])
 
 
 class SendInvites(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     canonical_event_id: UUID
     emails: list[EmailStr] = Field(default_factory=list, max_length=20)
     contact_ids: list[UUID] = Field(default_factory=list, max_length=20)
-    phones: list[str] = Field(default_factory=list, max_length=20)
-
-    @field_validator("phones")
-    @classmethod
-    def phone_numbers(cls, values: list[str]) -> list[str]:
-        return sorted({normalize_phone(value) for value in values})
 
     @model_validator(mode="after")
     def recipients_limit(self) -> "SendInvites":
-        if not 1 <= len(self.emails) + len(self.phones) + len(self.contact_ids) <= 20:
+        if not 1 <= len(self.emails) + len(self.contact_ids) <= 20:
             raise ValueError("Choose between 1 and 20 recipients")
         return self
 
@@ -56,7 +50,6 @@ class Invite(BaseModel):
     starts_at: datetime
     to_user_id: UUID | None
     channel: str
-    sms_state: str | None
     recipient_name: str | None
     invited_by: list[UUID]
     inviter_names: list[str]
@@ -70,7 +63,7 @@ class Invite(BaseModel):
 INVITE_SELECT = """
     SELECT i.id, i.canonical_event_id, e.title AS event_title, e.starts_at,
            i.to_user_id, coalesce(recipient.display_name, contact.display_name,
-           'SMS recipient') AS recipient_name, i.invited_by, i.channel, sms.state AS sms_state,
+           'Your friend') AS recipient_name, i.invited_by, i.channel,
            ARRAY(SELECT coalesce(sender.display_name, 'Someone')
                  FROM unnest(i.invited_by) WITH ORDINALITY AS names(id, position)
                  JOIN app_user sender ON sender.id = names.id ORDER BY names.position)
@@ -79,7 +72,6 @@ INVITE_SELECT = """
     FROM invite i JOIN canonical_event e ON e.id = i.canonical_event_id
     LEFT JOIN app_user recipient ON recipient.id = i.to_user_id
     LEFT JOIN contact ON contact.id = i.to_contact_id
-    LEFT JOIN sms_delivery sms ON sms.invite_id = i.id
 """
 
 
@@ -89,8 +81,6 @@ def send_invites(
     user: CurrentUser,
     connection: Database,
     now: Clock,
-    config: Config,
-    sms: Annotated[TwilioSMS, Depends(twilio_sms)],
 ) -> list[Invite]:
     event = connection.execute(
         text("""
@@ -115,28 +105,16 @@ def send_invites(
     if len(recipients) != len(payload.emails):
         raise HTTPException(422, "All recipients must already have an account")
     contact_ids = set(payload.contact_ids)
-    # Direct phone entry becomes a private, reusable manual contact.
+    # Serialize with contact imports for this owner.
     connection.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended('contacts:' || CAST(:id AS text), 0))"),
         {"id": user.id},
     )
-    for phone in payload.phones:
-        contact_ids.add(
-            connection.execute(
-                text("""
-            INSERT INTO contact (id, owner_user_id, phone_e164, source, imported_at)
-            VALUES (:id, :owner, :phone, 'manual', :now)
-            ON CONFLICT (owner_user_id, (coalesce(phone_e164, lower(email))))
-            DO UPDATE SET phone_e164=EXCLUDED.phone_e164 RETURNING id
-        """),
-                {"id": uuid4(), "owner": user.id, "phone": phone, "now": now},
-            ).scalar_one()
-        )
     connection.execute(text("SELECT match_contacts_to_users()"))
     contacts = (
         connection.execute(
             text("""
-        SELECT id, matched_user_id, phone_e164 FROM contact
+        SELECT id, matched_user_id FROM contact
         WHERE id=ANY(:ids) AND owner_user_id=:owner ORDER BY id FOR SHARE
     """),
             {"ids": list(contact_ids), "owner": user.id},
@@ -148,10 +126,8 @@ def send_invites(
         raise HTTPException(404, "Contact not found")
     recipient_ids = {row["id"] for row in recipients}
     recipient_ids.update(row["matched_user_id"] for row in contacts if row["matched_user_id"])
-    unmatched = [row for row in contacts if not row["matched_user_id"]]
-    if any(not row["phone_e164"] for row in unmatched):
-        raise HTTPException(422, "Unmatched contacts need an international phone number for SMS")
-    sms_settings = sms_config() if unmatched else None
+    if any(not row["matched_user_id"] for row in contacts):
+        raise HTTPException(422, "All selected contacts must already have an account")
     if user.id in recipient_ids:
         raise HTTPException(422, "You cannot invite yourself")
     ids: list[UUID] = []
@@ -179,45 +155,6 @@ def send_invites(
                 },
             ).scalar_one()
         )
-    sms_ids: list[UUID] = []
-    for contact in unmatched:
-        invite_id = connection.execute(
-            text("""
-            INSERT INTO invite (id, canonical_event_id, to_contact_id, invited_by,
-                                status, channel, message, sent_at)
-            VALUES (:id, :event, :contact, ARRAY[CAST(:sender AS uuid)],
-                    'pending', 'sms', :message, :now)
-            ON CONFLICT (canonical_event_id, to_contact_id) WHERE to_user_id IS NULL
-            DO UPDATE SET invited_by=invite.invited_by RETURNING id
-        """),
-            {
-                "id": uuid4(),
-                "event": payload.canonical_event_id,
-                "contact": contact["id"],
-                "sender": user.id,
-                "message": payload.message,
-                "now": now,
-            },
-        ).scalar_one()
-        body = (
-            f"{(user.display_name or 'A friend')[:80]} invited you to {event.title[:200]}. "
-            f"{payload.message or ''}\nView event: "
-            f"{config.web_url}/?event={payload.canonical_event_id}"
-        )
-        connection.execute(
-            text("""
-            INSERT INTO sms_delivery (invite_id, phone_e164, body, state)
-            VALUES (:id, :phone, :body, 'pending') ON CONFLICT (invite_id) DO NOTHING
-        """),
-            {"id": invite_id, "phone": contact["phone_e164"], "body": body},
-        )
-        ids.append(invite_id)
-        sms_ids.append(invite_id)
-    # Persist the invitation and outbox before any external side effects.
-    connection.commit()
-    if sms_settings:
-        for invite_id in sms_ids:
-            sms.deliver(connection, invite_id, sms_settings, now)
     rows = (
         connection.execute(
             text(INVITE_SELECT + " WHERE i.id = ANY(:ids) ORDER BY i.id"), {"ids": ids}
@@ -335,33 +272,3 @@ def respond(
     result = Invite.model_validate(dict(row))
     connection.commit()
     return result
-
-
-@router.post("/{invite_id}/retry-sms", dependencies=[Depends(require_browser_origin)])
-def retry_sms(
-    invite_id: UUID,
-    user: CurrentUser,
-    connection: Database,
-    now: Clock,
-    sms: Annotated[TwilioSMS, Depends(twilio_sms)],
-) -> Invite:
-    settings = sms_config()
-    row = connection.execute(
-        text("""
-        UPDATE sms_delivery d SET state='pending' FROM invite i, canonical_event e
-        WHERE d.invite_id=i.id AND i.canonical_event_id=e.id AND i.id=:id
-          AND CAST(:user AS uuid)=ANY(i.invited_by) AND e.starts_at>:now
-          AND e.archived_at IS NULL AND d.state IN ('failed', 'pending') RETURNING d.invite_id
-    """),
-        {"id": invite_id, "user": user.id, "now": now},
-    ).first()
-    if row is None:
-        raise HTTPException(409, "SMS cannot be safely retried")
-    connection.commit()
-    sms.deliver(connection, invite_id, settings, now)
-    row_data = (
-        connection.execute(text(INVITE_SELECT + " WHERE i.id=:id"), {"id": invite_id})
-        .mappings()
-        .one()
-    )
-    return Invite.model_validate(dict(row_data))
