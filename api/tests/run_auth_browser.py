@@ -23,6 +23,7 @@ from testcontainers.community.postgres import PostgresContainer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from contact_providers import PeopleReplay, TwilioReplay  # noqa: E402
 from oauth_fixture import GoogleReplay  # noqa: E402
 
 from app.oauth import GoogleIdentity, GoogleOAuth, OAuthAttempt, auth_config  # noqa: E402
@@ -63,6 +64,12 @@ def main() -> None:
                 "DATABASE_URL": database_url,
                 "CORS_ALLOWED_ORIGINS": web_url,
                 "PUBLIC_WEB_BASE_URL": web_url,
+                "GOOGLE_CONTACTS_REDIRECT_URI": api_url + "/api/contacts/google/callback",
+                "GOOGLE_PEOPLE_CONNECTIONS_URL": "https://people.example.test/connections",
+                "TWILIO_ACCOUNT_SID": "ACfixture",
+                "TWILIO_AUTH_TOKEN": "fixture-token",
+                "TWILIO_FROM_NUMBER": "+15005550006",
+                "TWILIO_MESSAGES_URL": "https://twilio.example.test/Messages.json",
                 "GOOGLE_CLIENT_ID": "fixture-client",
                 "GOOGLE_CLIENT_SECRET": "fixture-secret",
                 "GOOGLE_OAUTH_REDIRECT_URI": api_url + "/api/auth/google/callback",
@@ -87,8 +94,14 @@ def main() -> None:
 
         from app.auth import google_oauth
         from app.clock import utc_now
+        from app.contacts import google_contacts
         from app.main import app
+        from app.sms import twilio_sms
 
+        people = PeopleReplay()
+        sms = TwilioReplay()
+        app.dependency_overrides[google_contacts] = people.provider
+        app.dependency_overrides[twilio_sms] = sms.provider
         replay = GoogleReplay()
         config = auth_config()
         browser_time = datetime(2050, 9, 27, 12, tzinfo=UTC)
@@ -98,8 +111,9 @@ def main() -> None:
             "sender": GoogleReplay(),
             "recipient": GoogleReplay(),
             "feedback": GoogleReplay(),
+            "contacts": GoogleReplay(),
         }
-        for name in ("sender", "recipient", "feedback"):
+        for name in ("sender", "recipient", "feedback", "contacts"):
             identities[name].claims.update(
                 {
                     "sub": f"invite-{name}",
@@ -170,18 +184,22 @@ def main() -> None:
 
         @app.get("/fixture/google")
         def fake_google(state: str, redirect_uri: str) -> RedirectResponse:
-            assert redirect_uri == config.redirect_uri
+            assert redirect_uri in {config.redirect_uri, os.environ["GOOGLE_CONTACTS_REDIRECT_URI"]}
             return RedirectResponse(
                 redirect_uri
                 + "?"
                 + urlencode(
                     {
-                        "code": "fixture-code",
+                        "code": "contacts-code" if "/contacts/" in redirect_uri else "fixture-code",
                         "state": state,
                     }
                 ),
                 status_code=303,
             )
+
+        @app.get("/fixture/sms")
+        def captured_sms() -> list[dict[str, list[str]]]:
+            return sms.calls
 
         server = uvicorn.Server(uvicorn.Config(app, log_level="warning", access_log=False))
         thread = threading.Thread(target=server.run, kwargs={"sockets": [api_socket]}, daemon=True)
@@ -204,6 +222,7 @@ def main() -> None:
                     "auth.spec.ts",
                     "invites.spec.ts",
                     "feedback.spec.ts",
+                    "contacts.spec.ts",
                 ],
                 cwd=root / "web",
                 start_new_session=True,
@@ -217,9 +236,12 @@ def main() -> None:
                     )
                     == 1
                 )
-                assert connection.scalar(text("SELECT count(*) FROM invite")) == 1
+                assert connection.scalar(text("SELECT count(*) FROM invite")) == 2
                 assert connection.scalar(text("SELECT count(*) FROM attendance")) == 2
-                assert connection.scalar(text("SELECT status FROM invite")) == "accepted"
+                assert (
+                    connection.scalar(text("SELECT status FROM invite WHERE channel='in_app'"))
+                    == "accepted"
+                )
                 assert connection.execute(
                     text("""
                     SELECT state,rating,feedback_text FROM attendance
@@ -227,6 +249,8 @@ def main() -> None:
                 """)
                 ).one() == ("attended", 4, "Loved the music.")
             engine.dispose()
+            assert len(sms.calls) == 1
+            assert len(people.calls) == 3
             assert len(replay.calls) == 4  # Two logins, each exchanging code and reading JWKS.
         finally:
             if web is not None:

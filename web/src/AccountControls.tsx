@@ -1,3 +1,4 @@
+import { ContactsPanel } from "./ContactsPanel";
 import { useEffect, useState } from "react";
 import { InviteInbox } from "./InviteInbox";
 import { EventFeedback } from "./EventFeedback";
@@ -23,6 +24,7 @@ export function AccountControls({ apiBaseUrl, onUserChange }: {
   apiBaseUrl: string; onUserChange?: (userId: string | null) => void;
 }) {
   const [user, setUser] = useState<User | null>(null);
+  const [showContacts, setShowContacts] = useState(() => new URLSearchParams(window.location.search).has("contacts_imported"));
   const [showInvites, setShowInvites] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
   useEffect(() => { onUserChange?.(user?.id ?? null); }, [user, onUserChange]);
@@ -30,7 +32,8 @@ export function AccountControls({ apiBaseUrl, onUserChange }: {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(() =>
     new URLSearchParams(window.location.search).has("auth_error")
-      ? "Sign-in did not finish. Please try again." : "",
+      ? "Sign-in did not finish. Please try again." : new URLSearchParams(window.location.search).has("contacts_error")
+        ? "Google Contacts import did not finish. Please try again or upload a vCard." : "",
   );
   const base = apiBaseUrl.replace(/\/$/, "");
 
@@ -94,6 +97,7 @@ export function AccountControls({ apiBaseUrl, onUserChange }: {
       setUser(null);
       setShowInvites(false);
       setShowFeedback(false);
+      setShowContacts(false);
       setMessage("");
     } catch {
       setMessage("Unable to sign out. Please try again online.");
@@ -107,14 +111,17 @@ export function AccountControls({ apiBaseUrl, onUserChange }: {
       {loading ? <span role="status">Loading account…</span> : user ? (
         <>
           <span>Signed in as {user.display_name ?? user.email ?? "you"}</span>
-          <button type="button" onClick={() => { setShowFeedback(false); setShowInvites(true); }}>Invitations</button>
-          <button type="button" onClick={() => { setShowInvites(false); setShowFeedback(true); }}>Event feedback</button>
+          <button type="button" onClick={() => { setShowContacts(false); setShowFeedback(false); setShowInvites(true); }}>Invitations</button>
+          <button type="button" onClick={() => { setShowContacts(false); setShowInvites(false); setShowFeedback(true); }}>Event feedback</button>
+          <button type="button" onClick={() => { setShowInvites(false); setShowFeedback(false); setShowContacts(true); }}>Contacts</button>
           <button type="button" disabled={busy} onClick={() => { void signOut(); }}>
             {busy ? "Signing out…" : "Sign out"}
           </button>
         </>
       ) : <a href={`${base}/api/auth/google/start`}>Sign in with Google</a>}
       {message && <p role="status">{message}</p>}
+      {user && showContacts && <ContactsPanel key={user.id} apiBaseUrl={apiBaseUrl}
+        onClose={() => setShowContacts(false)} />}
       {user && showInvites && <InviteInbox key={user.id} apiBaseUrl={apiBaseUrl}
         onClose={() => setShowInvites(false)} />}
       {user && showFeedback && <EventFeedback key={user.id} apiBaseUrl={apiBaseUrl}

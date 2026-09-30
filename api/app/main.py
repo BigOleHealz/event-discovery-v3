@@ -10,6 +10,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 
 from app.auth import router as auth_router
 from app.categories import router as categories_router
+from app.contacts import router as contacts_router
 from app.dedup_review import router as review_router
 from app.events import router as events_router
 from app.feedback import router as feedback_router
@@ -37,7 +38,7 @@ app = FastAPI(title="Event Discovery API", lifespan=lifespan)
 async def private_auth_responses(request: Request, call_next: RequestResponseEndpoint) -> Response:
     response = await call_next(request)
     if request.url.path == "/api/me" or request.url.path.startswith(
-        ("/api/auth/", "/api/invites", "/api/attendance")
+        ("/api/auth/", "/api/invites", "/api/attendance", "/api/contacts")
     ):
         response.headers["Cache-Control"] = "no-store"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -62,6 +63,7 @@ app.include_router(review_router)
 app.include_router(auth_router)
 app.include_router(invites_router)
 app.include_router(feedback_router)
+app.include_router(contacts_router)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])

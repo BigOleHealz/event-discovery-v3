@@ -9,3 +9,5 @@ httpx>=0.28,<1
 itsdangerous>=2.2,<3
 PyJWT[crypto]>=2.10,<3
 email-validator>=2.2,<3
+phonenumbers>=9,<10
+vobject>=0.9.9,<1

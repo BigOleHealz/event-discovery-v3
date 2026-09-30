@@ -113,6 +113,7 @@ def save_google_user(connection: Connection, identity: GoogleIdentity, now: date
             .mappings()
             .one()
         )
+        connection.execute(text("SELECT match_contacts_to_users()"))
         connection.commit()
     except IntegrityError as error:
         connection.rollback()
@@ -140,6 +141,8 @@ def complete_google(
     store: SessionStore,
 ) -> User:
     attempt = validate_attempt(request, payload.state, config, now)
+    if attempt.purpose != "signin":
+        raise HTTPException(400, "Invalid sign-in attempt")
     identity = provider.exchange(payload.code, attempt, now)
     user = save_google_user(connection, identity, now)
     clear_attempt(response, config)

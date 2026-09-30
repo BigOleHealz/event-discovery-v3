@@ -1,3 +1,4 @@
+import { isEventFeature } from "./events";
 import { importLibrary, setOptions } from "@googlemaps/js-api-loader";
 import type { MarkerClusterer as MarkerClustererInstance } from "@googlemaps/markerclusterer";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -64,6 +65,26 @@ export function EventMap({ apiBaseUrl, apiKey, mapId, userId }: EventMapProps) {
   const [features, setFeatures] = useState<EventMapFeature[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<EventFeature | null>(null);
+  useEffect(() => {
+    const eventId = new URLSearchParams(window.location.search).get("event");
+    if (!eventId) return;
+    const controller = new AbortController();
+    async function loadLinkedEvent() {
+      try {
+        const response = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/api/events/${encodeURIComponent(eventId ?? "")}`, {
+          credentials: "omit", signal: controller.signal,
+        });
+        if (!response.ok) throw new Error("This event is no longer available.");
+        const value: unknown = await response.json();
+        if (!isEventFeature(value)) throw new Error("Unable to open this event.");
+        if (!controller.signal.aborted) setSelectedEvent(value);
+      } catch (reason: unknown) {
+        if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Unable to open event.");
+      }
+    }
+    void loadLinkedEvent();
+    return () => controller.abort();
+  }, [apiBaseUrl]);
   const closeDetails = useCallback(() => setSelectedEvent(null), []);
   const changeFilters = useCallback((nextFilters: EventFilters) => {
     setSelectedEvent(null);

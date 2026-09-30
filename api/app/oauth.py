@@ -91,6 +91,8 @@ class OAuthAttempt(BaseModel):
     verifier: str
     issued_at: int
     expires_at: int
+    owner_id: str | None = None
+    purpose: str = "signin"
 
 
 class GoogleIdentity(BaseModel):
@@ -114,7 +116,11 @@ def attempt_signer(config: AuthConfig) -> URLSafeSerializer:
     return URLSafeSerializer(config.secret, salt="event-discovery-oauth-v1")
 
 
-def begin_oauth(response: Response, config: AuthConfig, now: datetime) -> str:
+def begin_oauth(
+    response: Response, config: AuthConfig, now: datetime, *,
+    scope: str = "openid email profile", owner_id: str | None = None,
+    purpose: str = "signin",
+) -> str:
     timestamp = int(now.timestamp())
     attempt = OAuthAttempt(
         state=secrets.token_urlsafe(32),
@@ -122,6 +128,7 @@ def begin_oauth(response: Response, config: AuthConfig, now: datetime) -> str:
         verifier=secrets.token_urlsafe(48),
         issued_at=timestamp,
         expires_at=timestamp + 600,
+        owner_id=owner_id, purpose=purpose,
     )
     response.set_cookie(
         attempt_cookie(config),
@@ -141,7 +148,7 @@ def begin_oauth(response: Response, config: AuthConfig, now: datetime) -> str:
                 "client_id": config.client_id,
                 "redirect_uri": config.redirect_uri,
                 "response_type": "code",
-                "scope": "openid email profile",
+                "scope": scope,
                 "state": attempt.state,
                 "nonce": attempt.nonce,
                 "code_challenge": challenge.rstrip(b"=").decode(),

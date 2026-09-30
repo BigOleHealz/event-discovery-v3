@@ -23,6 +23,7 @@ EXPECTED_TABLES = (
     "invite",
     "attendance",
     "event_feedback_request",
+    "sms_delivery",
     "saved_search",
     "push_subscription",
     "notification_log",

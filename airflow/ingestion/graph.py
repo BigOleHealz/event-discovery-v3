@@ -25,6 +25,10 @@ Properties = dict[str, Property]
 
 # SQL and Cypher identifiers below are constants, never user input.
 NODE_QUERIES = {
+    "Contact": """
+        SELECT id, owner_user_id, display_name, phone_e164, email, matched_user_id
+        FROM contact ORDER BY id
+    """,
     "User": """
         SELECT id, display_name, avatar_url, is_shadow FROM app_user ORDER BY id
     """,
@@ -69,6 +73,14 @@ NODE_QUERIES = {
 }
 
 EDGE_QUERIES = {
+    "HAS_CONTACT": """
+        MATCH (u:User), (c:Contact) WHERE u.id=c.owner_user_id
+        CREATE (u)-[:HAS_CONTACT]->(c)
+    """,
+    "IS_USER": """
+        MATCH (c:Contact), (u:User) WHERE c.matched_user_id=u.id
+        CREATE (c)-[:IS_USER]->(u)
+    """,
     "LISTS": """
         MATCH (a:SourceListing), (b:CanonicalEvent)
         WHERE a.canonical_event_id = b.id CREATE (a)-[:LISTS]->(b)
