@@ -129,18 +129,18 @@ CREATE TABLE source_listing (
 
 CREATE TABLE app_user (
     id              UUID PRIMARY KEY,
-    google_sub      TEXT UNIQUE,           -- null for shadow accounts
+    google_sub      TEXT UNIQUE,           -- null for provisional admin or deferred social shadows
     email           TEXT UNIQUE,
     phone_e164      TEXT UNIQUE,
     display_name    TEXT,
     avatar_url      TEXT,
-    is_shadow       BOOLEAN DEFAULT FALSE, -- created by an accepted invite, never signed in
-    claimed_at      TIMESTAMPTZ,           -- set when a shadow account completes OAuth
+    is_shadow       BOOLEAN DEFAULT FALSE, -- provisional admin; social shadow accounts deferred
+    claimed_at      TIMESTAMPTZ,           -- account signup/claim timestamp
     created_at      TIMESTAMPTZ DEFAULT now(),
     CHECK (google_sub IS NOT NULL OR is_shadow)
 );
 
--- Imported phone/Google contacts, so invites can go out over SMS
+-- Imported phone/Google contacts, matched to registered users for in-app invites
 CREATE TABLE contact (
     id              UUID PRIMARY KEY,
     owner_user_id   UUID REFERENCES app_user(id),
@@ -159,10 +159,10 @@ CREATE TABLE invite (
     id                  UUID PRIMARY KEY,
     canonical_event_id  UUID REFERENCES canonical_event(id),
     to_user_id          UUID REFERENCES app_user(id),
-    to_contact_id       UUID REFERENCES contact(id),   -- non-users invited by text/email
+    to_contact_id       UUID REFERENCES contact(id),   -- reserved for deferred direct delivery
     invited_by          UUID[] NOT NULL,               -- appends on repeat invites
     status              TEXT DEFAULT 'pending',        -- pending|accepted|declined
-    channel             TEXT,                          -- sms|email|in_app
+    channel             TEXT,                          -- in_app|share_link; sms/email deferred
     message             TEXT,
     sent_at             TIMESTAMPTZ DEFAULT now(),
     responded_at        TIMESTAMPTZ,
@@ -171,6 +171,28 @@ CREATE TABLE invite (
 
 CREATE UNIQUE INDEX ON invite (canonical_event_id, to_user_id)
     WHERE to_user_id IS NOT NULL;
+
+-- Share links exist before the recipient is known; opening one does not create an invitee
+CREATE TABLE invite_share_link (
+    id                  UUID PRIMARY KEY,
+    canonical_event_id  UUID NOT NULL REFERENCES canonical_event(id),
+    created_by          UUID NOT NULL REFERENCES app_user(id),
+    token_hash          TEXT NOT NULL UNIQUE,          -- opaque bearer token; never store raw token
+    message             TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at          TIMESTAMPTZ NOT NULL,
+    revoked_at          TIMESTAMPTZ,
+    first_opened_at     TIMESTAMPTZ                    -- an observed open, not proof of delivery
+);
+
+-- A forwarded/group-shared link may be accepted by multiple signed-in users
+CREATE TABLE invite_share_acceptance (
+    share_link_id       UUID REFERENCES invite_share_link(id),
+    user_id             UUID REFERENCES app_user(id),
+    invite_id           UUID NOT NULL REFERENCES invite(id),
+    accepted_at         TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (share_link_id, user_id)
+);
 
 CREATE TABLE attendance (
     id                  UUID PRIMARY KEY,
@@ -195,7 +217,7 @@ CREATE TABLE saved_search (
     day_of_week     SMALLINT[],         -- null = any day
     time_of_day_start TIME,
     time_of_day_end   TIME,
-    notify_channel  TEXT DEFAULT 'email',   -- email|sms|none
+    notify_channel  TEXT DEFAULT 'email',   -- email|none; SMS deferred
     notify_frequency TEXT DEFAULT 'daily',  -- instant|daily|weekly
     last_notified_at TIMESTAMPTZ,
     created_at      TIMESTAMPTZ DEFAULT now()
@@ -221,7 +243,7 @@ CREATE TABLE notification_log (
     id                  UUID PRIMARY KEY,
     user_id             UUID REFERENCES app_user(id),
     canonical_event_id  UUID REFERENCES canonical_event(id),
-    channel             TEXT NOT NULL,   -- push|email|sms
+    channel             TEXT NOT NULL,   -- push|email; SMS deferred
     trigger             TEXT NOT NULL,   -- saved_search|nearby|invite|feedback_request
     sent_at             TIMESTAMPTZ DEFAULT now(),
     opened_at           TIMESTAMPTZ,
@@ -418,7 +440,7 @@ recorded as a list property:
 (:User {id: invitee})-[:INVITED_TO {
     invited_by:  ["user-uuid-1", "user-uuid-2"],  // appends on repeat invites
     status:      "pending",                        // pending | accepted | declined
-    channel:     "sms",                            // sms | email | in_app
+    channel:     "share_link",                     // share_link | in_app
     sent_at:     datetime(),
     responded_at: null
 }]->(:CanonicalEvent {id: event})
@@ -431,6 +453,23 @@ On acceptance: flip `status` to `accepted`, set `responded_at`, and create
 `(:User)-[:ATTENDING]->(:CanonicalEvent)`. The `INVITED_TO` edge is kept — it's the
 provenance of how they found the event. After the event passes, `ATTENDING` is rewritten to
 `ATTENDED` with the feedback properties (see Phase 6c).
+
+Share links are stored separately from recipient-event invites because the recipient is
+unknown when a link is created. Each link records its creator, event, optional message,
+expiry, and revocation state. Use an unguessable token, store only its hash, and keep raw
+tokens out of logs and referrers. Preserve the pending link safely across Google OAuth.
+Viewing a link never accepts it or creates attendance; sign-in followed by an explicit
+Accept action is required. Expired/revoked links and past/archived events cannot be accepted.
+
+Acceptance transactionally upserts the signed-in user's existing person-event `invite`,
+appends the link creator to `invited_by` if absent, creates `ATTENDING`, and records the
+link/user acceptance. Repeated or concurrent accepts must not duplicate attendance,
+acceptance records, or sender ids. Links can be forwarded or shared with a group, so each
+accepting account is tracked separately; possession of a link does not verify a phone or
+email, bind the recipient to an imported contact, or create a friendship automatically.
+Sender tracking is private to the link creator and distinguishes link creation, observed
+opens (which can include previews/bots), and authenticated acceptance. Opening the share
+sheet or copying a link is not confirmation that a message was sent or delivered.
 
 **Known tradeoffs of this model**, accepted for v1:
 
@@ -448,8 +487,9 @@ rebuilt from Postgres, so it's a rebuild, not a data migration.
 
 `Contact` nodes come from imported phone/Google contacts and hold name plus phone/email.
 When a contact's email or phone matches a registered `app_user`, link `IS_USER` so invites
-route in-app instead of over SMS. This is what makes text invites work without requiring the
-recipient to have an account.
+route in-app. For unmatched contacts or other new users, the inviter shares a unique link
+through their own messaging app. A recipient can view the event without an account, but
+must sign in with Google to accept. The app does not send SMS or email invites in v1.
 
 Postgres is the system of record; Neo4j is a projection, rebuilt from Postgres if it drifts.
 It powers category hierarchies ("show me all music, including subgenres"), venue history,
@@ -826,6 +866,12 @@ GET  /api/invites/received
 POST /api/invites/{id}/respond # accept | decline → creates ATTENDING on accept
 GET  /api/invites/sent         # list-membership scan on invited_by
 
+POST /api/invite-links         # authenticated creator; save link and return share URL
+GET  /api/invite-links         # current user's links and acceptance tracking only
+GET  /api/invite-links/{token} # limited event/invitation preview; never accepts
+POST /api/invite-links/{token}/accept # Google session + explicit accept → invite + ATTENDING
+POST /api/invite-links/{id}/revoke    # creator only
+
 POST /api/contacts/import      # Google Contacts / vCard upload
 GET  /api/contacts             # incl. matched_user_id for in-app routing
 
@@ -871,9 +917,13 @@ All event-returning endpoints exclude `archived_at IS NOT NULL` and filter to
 - **Event detail**: slide-over panel; shows one event with a registration button per source
   ("Register on Eventbrite" / "Register on Meetup")
 - **Auth**: Google OAuth sign-in button; signed-in state unlocks the invite flow
-- **Invite flow**: pick event → select from imported contacts or enter emails/numbers →
-  optional message → send (routes in-app when the contact matches a registered user, SMS or
-  email otherwise)
+- **Invite flow**: pick event → invite registered users in-app using matched contacts or
+  account emails, or choose **Share invite** → optional message → create a unique link →
+  open the native share sheet, with a copy-link fallback. The user chooses the messaging
+  app and recipient and sends the message. Recipients view the event, sign in with Google,
+  and explicitly accept; return them to the pending invitation after sign-in. Sender
+  tracking shows **Link created**, **Opened**, and **Accepted**, without claiming message
+  delivery or identifying a recipient before acceptance. No SMS provider is required.
 - **Friends layer**: toggle on the map that adds a badge — a ring or corner dot — to pins
   your friends are `ATTENDING`, with their avatars in the event detail panel. Deliberately a
   badge rather than a recolour: category owns colour, so the two encodings stack instead of
@@ -933,7 +983,15 @@ the design rather than a later fix:
 `push_nearby_events` runs daily; the friends-are-going variant can fire sooner since it's
 inherently higher signal.
 
-### Shadow accounts
+### Social shadow accounts (deferred beyond v1)
+
+V1 requires Google sign-in before invite acceptance and creates no social shadow accounts
+for unsigned-in invite recipients. The existing Phase 4f provisional dedup reviewer still
+uses `is_shadow = true` with no Google identity; preserve that account, its review history,
+and the schema support it needs. Its existing admin-token authentication is unchanged.
+Provider-sent SMS, one-tap acceptance without signup, and claim-on-signup merging are
+deferred until usage justifies their cost and complexity. The following social-account
+design applies only if this feature is taken up later.
 
 When someone accepts an SMS invite without an account, create a **shadow `app_user`**:
 `is_shadow = true`, `google_sub` null, identified by `phone_e164`. This means invite
@@ -980,7 +1038,8 @@ containers, not mocks — wherever the dependency is cheap to run.
   the suite. Decisions from `/admin/dedup` graduate into this corpus over time.
 - **Time is injected, never `now()`.** Anything touching `starts_at`, archival, quiet hours,
   or notification lead time takes a clock parameter. Freeze it in tests.
-- **External APIs are recorded.** Google Geocoding, Meetup, Eventbrite, Twilio: record once
+- **External APIs are recorded.** Google Geocoding, Google Contacts, Meetup, Eventbrite
+  (and Twilio if SMS is introduced later): record once
   with `vcr.py` (or hand-written fixtures), replay in CI. No test spends a real API call.
 - **Model extraction is recorded on both sides.** For a model-extracted source the fixture is
   the captured page *and* the model's response, both replayed — no test calls a model, for cost
@@ -993,6 +1052,15 @@ containers, not mocks — wherever the dependency is cheap to run.
 - **Constraints are tested as behaviour.** The unique index on
   `(user_id, canonical_event_id, trigger)` has a test that tries to double-send and asserts
   the insert fails — that constraint is the anti-spam guarantee, so it needs a test proving it.
+- **Share invitations.** Test the browser flow through share/copy, link preview, Google
+  sign-in, and explicit acceptance. A preview or cancelled share must never mark an invite
+  sent/delivered/accepted or create attendance. Invalid, expired, and revoked tokens fail;
+  past/archived events reject acceptance. Repeated/concurrent accepts and two creators
+  inviting one person preserve one person-event invite and attendance, appending each
+  creator once to `invited_by`; attempt a duplicate write against the partial unique index.
+  Test forwarded links with multiple accepting accounts, and verify users cannot read
+  another user's link tracking, invites, or contacts, or revoke their links. No SMS account
+  or live provider call is required for the Phase 6 end-to-end flow.
 - **Idempotency.** Every DAG task runs twice in a test and asserts the second run produces no
   duplicate rows. Ingestion is inherently re-run.
 - **Service worker.** Playwright asserts the manifest is served, the worker registers, and the
@@ -1177,20 +1245,29 @@ and the ambiguous band is reviewable in a browser.
 - **6c** — Post-event feedback: `request_event_feedback` DAG, `ATTENDING` → `ATTENDED`
   rewrite, rating + text capture
 - **6d** — Contacts import (Google Contacts / vCard), `match_contacts_to_users` DAG,
-  SMS invites for unmatched contacts (Twilio; per-message cost absorbed for now)
-- **6d.1** — Shadow accounts: one-tap SMS invite acceptance, claim-on-signup merge
+  in-app routing for matched users; unmatched contacts use the share-link flow in 6d.1.
+  Provider-sent SMS is deferred; Twilio credentials are not a Phase 6 prerequisite
+- **6d.1** — Unique share links with Google sign-in and explicit acceptance: persist
+  creator/event attribution, share sheet plus copy-link fallback, preserve the invitation
+  across OAuth, and atomically record acceptance and `ATTENDING`. Track link creation,
+  observed opens, and accepting users without claiming send/delivery confirmation. Include
+  token expiry/revocation, owner authorization, and repeat/concurrent acceptance tests.
+  Social shadow accounts and claim-on-signup merging are deferred beyond v1; the existing
+  Phase 4f provisional admin reviewer remains supported
 - **6e** — Friends: `FRIENDS_WITH` edges, and the friends-are-going map layer, rendered as a
   badge on pins so category colour survives
 
-*Done when:* you can text a friend an invite and see them light up on the map on accept.
+*Done when:* you can share an invite through your own messaging app, have a friend open
+the link, sign in with Google, and accept, then see their acceptance and their attendance
+on the friends-going map badge. This flow requires no paid SMS provider.
 
 ### Phase 7 — Retention features
 
 - **7a** — Calendar export: ICS endpoint + Google Calendar deep link
 - **7b** — Saved searches: persist bounds + filters, management UI
 - **7c** — `notify_saved_searches` DAG with `saved_search_hit` dedup so nothing sends twice
-- **7d** — Notification delivery (email first, SMS second) with instant/daily/weekly
-  frequencies
+- **7d** — Notification delivery by email with instant/daily/weekly frequencies;
+  provider-sent SMS is deferred beyond v1
 - **7e** — Web Push on the existing service worker, `push_subscription`, opt-in prompt gated
   behind a first RSVP; on iOS, detect non-installed state and prompt to install first
 - **7f** — `push_nearby_events` DAG with the full anti-spam stack: relevance floor, weekly
@@ -1263,10 +1340,17 @@ Settled, recorded so they don't get relitigated:
   Hybrid events count as in-person. (§5)
 - **Retain past events.** No hard delete; `archived_at` hides them from the map 30 days after
   they end, but they stay queryable as history. (§5)
-- **SMS via Twilio**, per-message cost absorbed for now. Revisit if invite volume grows. (§6d)
+- **User-shared invite links** for new users, with Google sign-in and explicit acceptance.
+  Keep in-app invites for registered users. The hobby-project budget does not justify SMS
+  provider fees or delivery operations; defer Twilio until usage warrants them. Share-sheet
+  activity does not prove sending or delivery, so track creation, opens, and acceptance
+  separately. (§3.3, §7, §11 6d–6d.1)
 - **Manual review UI for the 0.75–0.88 dedup band** — a real admin screen, not a SQL view,
   with decisions kept as labelled data for later threshold tuning. (§4)
-- **Shadow accounts** for non-users who accept SMS invites, claimed on later signup. (§7)
+- **Social shadow accounts deferred beyond v1.** Accept the Google sign-in step to keep recipient
+  identity and attendance straightforward, avoiding phone verification and account-merge
+  complexity for now. Preserve the deferred design for reconsideration and retain Phase
+  4f's existing provisional admin reviewer and its schema support. (§7)
 - **Push notifications** for relevant nearby events, with frequency caps, quiet hours, a
   relevance floor, and open-rate backoff built in from the start. (§7)
 - **Progressive web app, not native.** Installable from the browser on desktop and mobile,
@@ -1332,7 +1416,7 @@ Settled, recorded so they don't get relitigated:
 ## 14. Open Questions
 
 1. Rate limits and ToS review for each scraped source before adding it.
-2. Shadow account merge edge case: same person with both a shadow account (phone) and a real
+2. Deferred with social shadow accounts: same person with both a shadow account (phone) and a real
    account (email), no overlapping identifier. Detectable at all, or accept the duplicate?
 3. Push relevance floor needs RSVP history to work, but new users have none — is a cold-start
    signal worth it (declared category interests at signup), or do new users simply get no

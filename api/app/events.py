@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, time
 from typing import Annotated, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, HttpUrl, TypeAdapter
@@ -435,3 +436,16 @@ def event_feature(row: RowMapping) -> EventFeature:
             ),
         ),
     )
+
+
+@router.get("/{event_id}", response_model=EventFeature)
+def get_event(
+    event_id: UUID, connection: Annotated[Connection, Depends(get_connection)],
+) -> EventFeature:
+    query = text(EVENT_SELECT.format(
+        filter_clause="AND event.id=:id", bounds_clause="", event_limit=1,
+    ))
+    row = connection.execute(query, {"id": event_id}).mappings().one_or_none()
+    if row is None:
+        raise HTTPException(404, "Event not found")
+    return event_feature(row)

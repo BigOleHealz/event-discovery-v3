@@ -25,6 +25,13 @@ Properties = dict[str, Property]
 
 # SQL and Cypher identifiers below are constants, never user input.
 NODE_QUERIES = {
+    "Contact": """
+        SELECT id, owner_user_id, display_name, phone_e164, email, matched_user_id
+        FROM contact ORDER BY id
+    """,
+    "User": """
+        SELECT id, display_name, avatar_url, is_shadow FROM app_user ORDER BY id
+    """,
     "CanonicalEvent": """
         SELECT id, title, description, starts_at, ends_at, timezone, venue_id,
                primary_category, recurrence_group_id, created_at, updated_at, archived_at,
@@ -66,6 +73,14 @@ NODE_QUERIES = {
 }
 
 EDGE_QUERIES = {
+    "HAS_CONTACT": """
+        MATCH (u:User), (c:Contact) WHERE u.id=c.owner_user_id
+        CREATE (u)-[:HAS_CONTACT]->(c)
+    """,
+    "IS_USER": """
+        MATCH (c:Contact), (u:User) WHERE c.matched_user_id=u.id
+        CREATE (c)-[:IS_USER]->(u)
+    """,
     "LISTS": """
         MATCH (a:SourceListing), (b:CanonicalEvent)
         WHERE a.canonical_event_id = b.id CREATE (a)-[:LISTS]->(b)
@@ -101,6 +116,26 @@ SIMILARITY_QUERY = """
       AND a.dedup_similarity BETWEEN -1 AND 1
     GROUP BY 1, 2 ORDER BY 1, 2
 """
+
+# Social relationships are rebuilt from canonical state alongside event nodes.
+# UUID arrays are cast to text arrays so sender order survives serialization.
+SOCIAL_QUERIES = {
+    "INVITED_TO": """
+        SELECT to_user_id AS source, canonical_event_id AS target,
+               invited_by::text[] AS invited_by, status, channel, sent_at, responded_at
+        FROM invite WHERE to_user_id IS NOT NULL ORDER BY id
+    """,
+    "ATTENDING": """
+        SELECT user_id AS source, canonical_event_id AS target, source AS attendance_source,
+               created_at
+        FROM attendance WHERE state = 'attending' ORDER BY id
+    """,
+    "ATTENDED": """
+        SELECT user_id AS source, canonical_event_id AS target, source AS attendance_source,
+               created_at, rating, feedback_text, feedback_at
+        FROM attendance WHERE state = 'attended' ORDER BY id
+    """,
+}
 
 
 @dataclass(frozen=True)
@@ -147,7 +182,9 @@ def _snapshot(connection: psycopg.Connection[tuple[object, ...]]) -> dict[str, l
                     {key: _property(value) for key, value in row.items()}
                     for row in cursor.execute(query).fetchall()
                 ]
-                for label, query in {**NODE_QUERIES, "SIMILAR_TO": SIMILARITY_QUERY}.items()
+                for label, query in {
+                    **NODE_QUERIES, "SIMILAR_TO": SIMILARITY_QUERY, **SOCIAL_QUERIES,
+                }.items()
             }
 
 
@@ -175,6 +212,25 @@ def _replace_graph(
                CREATE (a)-[:SIMILAR_TO {score: row.score}]->(b)""",
             rows=similarities[offset:offset + 500],
         ).consume().counters.relationships_created
+    for relationship in SOCIAL_QUERIES:
+        rows = snapshot[relationship]
+        counts[relationship] = 0
+        timestamps = (
+            "SET r.sent_at = datetime(row.sent_at), r.responded_at = datetime(row.responded_at)"
+            if relationship == "INVITED_TO"
+            else "SET r.created_at = datetime(row.created_at)"
+        )
+        if relationship == "ATTENDED":
+            timestamps += " SET r.feedback_at = datetime(row.feedback_at)"
+        for offset in range(0, len(rows), 500):
+            counts[relationship] += transaction.run(
+                f"""UNWIND $rows AS row
+                    MATCH (u:User {{id: row.source}}), (e:CanonicalEvent {{id: row.target}})
+                    CREATE (u)-[r:{relationship}]->(e)
+                    SET r = row REMOVE r.source, r.target
+                    {timestamps}""",
+                rows=rows[offset:offset + 500],
+            ).consume().counters.relationships_created
     return counts
 
 

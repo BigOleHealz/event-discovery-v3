@@ -294,7 +294,7 @@ describe("EventMap", () => {
     expect(screen.getByRole("status")).toHaveTextContent("1 event");
     act(() => markerInstances[0]?.trigger("click"));
     const detail = within(screen.getByRole("dialog", { name: "Parkway Jazz Night" }));
-    expect(detail.getAllByRole("link")).toHaveLength(2);
+    expect(detail.getAllByRole("link", { name: /^Register on/ })).toHaveLength(2);
     expect(detail.getByText("Choose where to register for this event.")).toBeVisible();
     for (const [source, url] of [
       ["Eventbrite", "https://www.eventbrite.com/e/parkway-jazz-night"],

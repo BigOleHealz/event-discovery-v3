@@ -137,3 +137,15 @@ jobs:
 
       - name: Run Phase 1 browser flow
         run: bash tests/phase1-e2e.sh
+
+      - name: Set up Python for auth browser flow
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install auth browser dependencies
+        run: pip install --requirement api/requirements-dev.txt
+
+      - name: Verify sign-in, invites, and feedback with replayed provider and real Postgres
+        working-directory: api
+        run: python tests/run_auth_browser.py
