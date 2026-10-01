@@ -1287,13 +1287,57 @@ resent it.
 
 *Done when:* a site with no API and no server-rendered listings is ingesting nightly.
 
-### Phase 9 — Deploy
+### Phase 9 — Mobile usability and visual refresh
 
-- **9a** — Price the target provider; decide managed vs. self-hosted for Neo4j, and confirm
+A standalone phase that can be implemented in a new session on branch
+`phase-9-mobile-ux`, cut from the latest merged `main`. Depends on Phase 6 and the search
+controls from 3e and category hierarchy from 5b; it does not depend on Phases 7–8 and can
+be scheduled immediately after Phase 6. Complete this phase before Phase 10 deployment.
+
+- **9a** — Mobile map layout: make the date/time and event-type filter panel collapsible,
+  with a clearly labelled control to reopen it and a compact indication of active filters.
+  Start collapsed on mobile; collapsing or reopening must preserve filter values and URL
+  query parameters. Hide the entire "Find something worth going to" branding box on mobile
+  to reclaim map space. Keep filters, account controls, and event details reachable without
+  overlapping controls or horizontal page scrolling, including in the installed PWA
+- **9b** — Expandable event-type hierarchy on desktop and mobile: allow parent categories
+  and nested subcategory groups to expand/collapse independently. Keep expansion separate
+  from selection; collapsing a group preserves selections and indicates selected descendants.
+  Preserve the existing parent-category filtering semantics (a parent includes its children).
+  Disclosure controls must work with touch, mouse, and keyboard and expose expanded state
+  to assistive technology
+- **9c** — Event-type multi-select on desktop and mobile without Command/Ctrl: replace
+  modifier-dependent selection with labelled checkboxes or equivalent explicit toggles.
+  Each click/tap toggles one selection without clearing the others; provide a clear-all
+  action and visible selected state, including when categories or the mobile panel are
+  collapsed. Keep multiple selections in the URL and preserve the existing API's filtering
+  semantics across reloads and browser back/forward navigation
+- **9d** — Reference-led visual refresh: replace the brown theme with a cohesive palette,
+  typography, spacing, and control styling guided by a website link supplied by the
+  maintainer. **Before implementing this sub-phase, check whether the maintainer has supplied
+  the reference website URL. If it is missing, remind them and ask for it; wait for the link
+  before choosing or implementing the new style.** Apply the design to desktop and mobile,
+  retaining readable contrast, visible keyboard focus, comfortable touch targets, Google
+  sign-in branding, category distinctions, and the separate friends-going pin badge
+
+*Tests:* Playwright coverage at phone and desktop sizes for collapse/reopen, hidden mobile
+branding, nested category disclosures, multiple selections without modifier keys, clear-all,
+and URL/back/forward persistence. Verify filtering results as well as control state. Check
+keyboard operation, narrow-screen overflow, and event-detail access; review the visual
+refresh against the supplied reference on both screen sizes.
+
+*Done when:* on a phone, the map has room to browse with the branding box hidden and filters
+collapsed; on both phone and desktop, category groups expand/collapse and multiple event
+types can be selected with ordinary taps/clicks. The refreshed style follows the supplied
+reference and preserves the search, invitation, and friends-going flows.
+
+### Phase 10 — Deploy
+
+- **10a** — Price the target provider; decide managed vs. self-hosted for Neo4j, and confirm
   the managed Postgres offers PostGIS and pgvector before committing to it (§10)
-- **9b** — Managed Postgres, app containers on the PaaS, secrets from provider env
-- **9c** — Domain, TLS, OAuth redirect URIs for production
-- **9d** — Backups for Postgres; documented rebuild path for Neo4j (a projection, so restore
+- **10b** — Managed Postgres, app containers on the PaaS, secrets from provider env
+- **10c** — Domain, TLS, OAuth redirect URIs for production
+- **10d** — Backups for Postgres; documented rebuild path for Neo4j (a projection, so restore
   = re-run the DAG). Embeddings need no separate path now that they sit in Postgres — they are
   covered by the same backup, and re-derivable by re-embedding if one is ever older than the
   listings
