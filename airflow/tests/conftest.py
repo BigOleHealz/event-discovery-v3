@@ -46,7 +46,7 @@ def clean_ingestion_tables(database_url: str) -> Iterator[None]:
             TRUNCATE ingest.extraction_plan, ingest.event_detail_cache, ingest.geocode_cache,
                 source_listing,
                 ingest.rejected_listing, ingest.page_fetch, ingest.run,
-                ingest.crawl_target, venue CASCADE;
+                ingest.crawl_target, venue, app_user CASCADE;
             INSERT INTO ingest.crawl_target (
                 id, source, market_id, source_location, category, enabled,
                 window_days, page_cap

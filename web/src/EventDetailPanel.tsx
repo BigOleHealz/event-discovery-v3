@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import type { EventFeature, RegistrationLink } from "./events";
 import { SimilarEvents } from "./SimilarEventList";
 import { InviteForm } from "./InviteForm";
+import { FriendsGoing } from "./FriendsGoing";
 
 const DATE_TIME_FORMATTERS = new Map<string, Intl.DateTimeFormat>();
 const SOURCE_NAMES: Readonly<Record<string, string>> = {
@@ -123,6 +124,7 @@ export function EventDetailPanel({ apiBaseUrl, event, onClose, onSelect, userId 
             <p>{properties.description}</p>
           </section>
         )}
+        {userId ? <FriendsGoing key={`friends:${userId}:${event.id}`} apiBaseUrl={apiBaseUrl} eventId={event.id} /> : null}
         {userId ? <InviteForm key={`${userId}:${event.id}`} apiBaseUrl={apiBaseUrl} eventId={event.id} /> :
           <p><a href={`${apiBaseUrl.replace(/\/$/, "")}/api/auth/google/start`}>Sign in to invite friends</a></p>}
         <SimilarEvents key={`${apiBaseUrl}:${event.id}`} apiBaseUrl={apiBaseUrl}

@@ -173,12 +173,11 @@ function isEventMapFeatureCollection(value: unknown): value is EventMapFeatureCo
   );
 }
 
-export async function fetchEvents(
+export function eventsUrl(
   apiBaseUrl: string,
-  signal: AbortSignal,
   viewport?: EventViewport,
   filters?: EventFilters,
-): Promise<EventResult> {
+): URL {
   const endpoint = `${apiBaseUrl.replace(/\/$/, "")}/api/events`;
   const url = new URL(endpoint, window.location.href);
   if (viewport !== undefined) {
@@ -205,6 +204,13 @@ export async function fetchEvents(
       url.searchParams.set("categories", filters.categories.join(","));
     }
   }
+  return url;
+}
+
+export async function fetchEvents(
+  apiBaseUrl: string, signal: AbortSignal, viewport?: EventViewport, filters?: EventFilters,
+): Promise<EventResult> {
+  const url = eventsUrl(apiBaseUrl, viewport, filters);
   let response: Response;
   let payload: unknown;
   try {

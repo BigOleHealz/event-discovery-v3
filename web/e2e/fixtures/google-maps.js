@@ -172,7 +172,12 @@
     }
   }
 
-  class FixturePinElement extends HTMLElement {}
+  class FixturePinElement extends HTMLElement {
+    constructor(options = {}) {
+      super();
+      this.style.background = options.background || "";
+    }
+  }
 
   if (!customElements.get("gmp-advanced-marker")) {
     customElements.define("gmp-advanced-marker", FixtureAdvancedMarkerElement);

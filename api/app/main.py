@@ -14,6 +14,7 @@ from app.contacts import router as contacts_router
 from app.dedup_review import router as review_router
 from app.events import router as events_router
 from app.feedback import router as feedback_router
+from app.friends import router as friends_router
 from app.graph import graph_driver
 from app.invite_links import RedactInviteLinkAccessLogs
 from app.invite_links import router as invite_links_router
@@ -40,7 +41,10 @@ app = FastAPI(title="Event Discovery API", lifespan=lifespan)
 async def private_auth_responses(request: Request, call_next: RequestResponseEndpoint) -> Response:
     response = await call_next(request)
     if request.url.path == "/api/me" or request.url.path.startswith(
-        ("/api/auth/", "/api/invites", "/api/invite-links", "/api/attendance", "/api/contacts")
+        ("/api/auth/", "/api/invites", "/api/invite-links", "/api/attendance",
+         "/api/contacts", "/api/friends")
+    ) or request.url.path == "/api/events/friends" or request.url.path.endswith(
+        "/friends"
     ):
         response.headers["Cache-Control"] = "no-store"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -59,6 +63,7 @@ if allowed_origins:
         allow_headers=["*"],
     )
 
+app.include_router(friends_router)
 app.include_router(events_router)
 app.include_router(similar_events_router)
 app.include_router(categories_router)
