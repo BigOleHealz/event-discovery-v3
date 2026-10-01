@@ -120,6 +120,10 @@ SIMILARITY_QUERY = """
 # Social relationships are rebuilt from canonical state alongside event nodes.
 # UUID arrays are cast to text arrays so sender order survives serialization.
 SOCIAL_QUERIES = {
+    "FRIENDS_WITH": """
+        SELECT user_low AS source, user_high AS target, accepted_at AS created_at
+        FROM friendship WHERE accepted_at IS NOT NULL ORDER BY user_low, user_high
+    """,
     "INVITED_TO": """
         SELECT to_user_id AS source, canonical_event_id AS target,
                invited_by::text[] AS invited_by, status, channel, sent_at, responded_at
@@ -223,9 +227,10 @@ def _replace_graph(
         if relationship == "ATTENDED":
             timestamps += " SET r.feedback_at = datetime(row.feedback_at)"
         for offset in range(0, len(rows), 500):
+            target_label = "User" if relationship == "FRIENDS_WITH" else "CanonicalEvent"
             counts[relationship] += transaction.run(
                 f"""UNWIND $rows AS row
-                    MATCH (u:User {{id: row.source}}), (e:CanonicalEvent {{id: row.target}})
+                    MATCH (u:User {{id: row.source}}), (e:{target_label} {{id: row.target}})
                     CREATE (u)-[r:{relationship}]->(e)
                     SET r = row REMOVE r.source, r.target
                     {timestamps}""",

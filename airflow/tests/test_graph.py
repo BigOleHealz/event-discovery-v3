@@ -197,7 +197,7 @@ def test_rebuild_exact_idempotent_and_repairs_drift(
                      "Category": 17, "LISTS": 2, "HELD_AT": 1, "HAS_CATEGORY": 1, "IN_CITY": 3,
                      "SUBCATEGORY_OF": 9, "SIMILAR_TO": 1, "User": 0,
                      "Contact": 0, "HAS_CONTACT": 0, "IS_USER": 0,
-                     "INVITED_TO": 0, "ATTENDING": 0, "ATTENDED": 0}
+                     "INVITED_TO": 0, "ATTENDING": 0, "ATTENDED": 0, "FRIENDS_WITH": 0}
     assert_matches_postgres(database_url, graph_config)
     before = graph_state(graph_config)
     assert project_to_neo4j(

@@ -19,6 +19,7 @@ from alembic.config import Config
 from fastapi import Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import create_engine, text
+from testcontainers.community.neo4j import Neo4jContainer
 from testcontainers.community.postgres import PostgresContainer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -53,7 +54,13 @@ def main() -> None:
     os.environ.setdefault("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE", "/var/run/docker.sock")
     image = "event-discovery-postgres:16-3.4-vector-0.8.6"
     subprocess.run(["docker", "build", "-t", image, str(root / "postgres")], check=True)
-    with PostgresContainer(image, driver="psycopg") as postgres, listener() as api_socket:
+    with (
+        PostgresContainer(image, driver="psycopg") as postgres,
+        Neo4jContainer(
+            "neo4j:5.26-community", username="neo4j", password="browser-friends",
+        ) as graph,
+        listener() as api_socket,
+    ):
         database_url = postgres.get_connection_url()
         api_url = f"http://127.0.0.1:{api_socket.getsockname()[1]}"
         with listener() as web_socket:
@@ -81,6 +88,10 @@ def main() -> None:
                 "VITE_GOOGLE_MAPS_MAP_ID": "DEMO_MAP_ID",
                 "PLAYWRIGHT_BASE_URL": web_url,
                 "AUTH_E2E_API_URL": api_url,
+                "NEO4J_URI": graph.get_connection_url(),
+                "NEO4J_USER": "neo4j",
+                "NEO4J_PASSWORD": "browser-friends",
+                "NEO4J_DATABASE": "neo4j",
             }
         )
         migration = Config(str(root / "api/alembic.ini"))
@@ -111,8 +122,13 @@ def main() -> None:
             "friend": GoogleReplay(),
             "sharer": GoogleReplay(),
             "guest": GoogleReplay(),
+            "host": GoogleReplay(),
+            "pal": GoogleReplay(),
         }
-        for name in ("sender", "recipient", "feedback", "contacts", "friend", "sharer", "guest"):
+        for name in (
+            "sender", "recipient", "feedback", "contacts", "friend", "sharer", "guest",
+            "host", "pal",
+        ):
             identities[name].claims.update(
                 {
                     "sub": f"invite-{name}",
@@ -130,7 +146,9 @@ def main() -> None:
                        ('6d000000-0000-0000-0000-000000000001', 'Contact night', :starts, 'UTC',
                         ST_SetSRID(ST_MakePoint(-75.17,39.96),4326)::geography),
                        ('6d100000-0000-0000-0000-000000000001', 'Share night', :starts, 'UTC',
-                        ST_SetSRID(ST_MakePoint(-75.18,39.97),4326)::geography)
+                        ST_SetSRID(ST_MakePoint(-75.18,39.97),4326)::geography),
+                       ('6e000000-0000-0000-0000-000000000001', 'Friend night', :starts, 'UTC',
+                        ST_SetSRID(ST_MakePoint(-75.19,39.98),4326)::geography)
             """),
                 {"starts": browser_time + timedelta(days=1)},
             )
@@ -223,6 +241,7 @@ def main() -> None:
                     "feedback.spec.ts",
                     "contacts.spec.ts",
                     "invite-links.spec.ts",
+                    "friends.spec.ts",
                 ],
                 cwd=root / "web",
                 start_new_session=True,
@@ -236,10 +255,10 @@ def main() -> None:
                     )
                     == 1
                 )
-                assert connection.scalar(text("SELECT count(*) FROM invite")) == 3
+                assert connection.scalar(text("SELECT count(*) FROM invite")) == 4
                 assert connection.scalar(text("SELECT count(*) FROM sms_delivery")) == 0
-                assert connection.scalar(text("SELECT count(*) FROM invite_share_link")) == 1
-                assert connection.scalar(text("SELECT count(*) FROM invite_share_acceptance")) == 1
+                assert connection.scalar(text("SELECT count(*) FROM invite_share_link")) == 2
+                assert connection.scalar(text("SELECT count(*) FROM invite_share_acceptance")) == 2
                 assert (
                     connection.scalar(
                         text(
@@ -247,9 +266,9 @@ def main() -> None:
                             "WHERE channel='share_link' AND status='accepted'"
                         )
                     )
-                    == 1
+                    == 2
                 )
-                assert connection.scalar(text("SELECT count(*) FROM attendance")) == 4
+                assert connection.scalar(text("SELECT count(*) FROM attendance")) == 5
                 assert (
                     connection.scalar(
                         text(

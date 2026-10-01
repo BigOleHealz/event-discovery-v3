@@ -570,6 +570,31 @@ a {
   overflow-wrap: anywhere;
 }
 
+.friends-pin { position: relative; }
+.friends-pin-badge {
+  position: absolute;
+  top: -5px;
+  right: -7px;
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  border: 2px solid white;
+  border-radius: 50%;
+  background: #172d40;
+  color: white;
+  font: bold 12px/1 sans-serif;
+  box-shadow: 0 1px 3px #0008;
+}
+.friends-layer-controls { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.friends-layer-controls label { display: inline-flex; gap: 0.4rem; align-items: center; min-height: 44px; }
+.friends-layer-controls input { width: auto; }
+.friends-layer-controls span { flex-basis: 100%; }
+.friends-panel form, .friends-panel label { display: grid; gap: 0.5rem; }
+.friend-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 0.75rem 0; }
+.friend-avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; }
+.friend-initial { display: grid; place-items: center; background: #e5e9ec; color: #172d40; }
+
 .account-controls a,
 .account-controls button {
   display: inline-flex;

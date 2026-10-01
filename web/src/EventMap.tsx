@@ -4,11 +4,12 @@ import type { MarkerClusterer as MarkerClustererInstance } from "@googlemaps/mar
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { EventDetailPanel } from "./EventDetailPanel";
+import { useFriendsLayer } from "./useFriendsLayer";
 import { categoryRoots, fetchCategories, type Category } from "./categories";
 import { EventFilterSidebar } from "./EventFilterSidebar";
 import { AGGREGATED_CELL_PIN_STYLE, pinStyleForCategory } from "./categoryPinStyle";
 import { readEventFilters, replaceEventFilterUrl } from "./eventFilterState";
-import type { EventFeature, EventFilters, EventMapFeature } from "./events";
+import type { EventFeature, EventFilters, EventMapFeature, EventViewport } from "./events";
 import { fetchEvents, isAggregatedGridCell, rememberViewport, savedViewport } from "./events";
 
 const PHILADELPHIA_CENTER: google.maps.LatLngLiteral = { lat: 39.9526, lng: -75.1652 };
@@ -49,6 +50,17 @@ function categoriesIn(features: EventMapFeature[]): string[] {
   return Array.from(categories).sort();
 }
 
+function badgedPin(pin: HTMLElement): HTMLDivElement {
+  const wrapper = document.createElement("div");
+  wrapper.className = "friends-pin";
+  const badge = document.createElement("span");
+  badge.className = "friends-pin-badge";
+  badge.setAttribute("aria-hidden", "true");
+  badge.textContent = "♥";
+  wrapper.append(pin, badge);
+  return wrapper;
+}
+
 export function EventMap({ apiBaseUrl, apiKey, mapId, userId }: EventMapProps) {
   const mapElement = useRef<HTMLDivElement>(null);
   const [filters, setFilters] = useState<EventFilters>(() => readEventFilters());
@@ -65,6 +77,14 @@ export function EventMap({ apiBaseUrl, apiKey, mapId, userId }: EventMapProps) {
   const [features, setFeatures] = useState<EventMapFeature[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<EventFeature | null>(null);
+  const [friendsEnabled, setFriendsEnabled] = useState(false);
+  const [viewport, setViewport] = useState<EventViewport>();
+  const friends = useFriendsLayer(apiBaseUrl, userId, friendsEnabled, viewport, filters, stale);
+  const badgesRef = useRef(friends.badges);
+  useEffect(() => {
+    badgesRef.current = friends.badges;
+    repaintRef.current?.();
+  }, [friends.badges]);
   const linkedEventId = useRef<string | null>(null);
   useEffect(() => {
     const eventId = new URLSearchParams(window.location.search).get("event");
@@ -169,6 +189,10 @@ export function EventMap({ apiBaseUrl, apiKey, mapId, userId }: EventMapProps) {
       for (const event of map && markerLibrary ? nextEvents : []) {
         const [longitude, latitude] = event.geometry.coordinates;
         const isGridCell = isAggregatedGridCell(event);
+        const friendCount = badgesRef.current.get(event.id) ?? 0;
+        const friendsLabel = friendCount ? (isGridCell
+          ? ` — friends going to ${friendCount} events`
+          : ` — ${friendCount} ${friendCount === 1 ? "friend" : "friends"} going`) : "";
         const pinStyle = isGridCell
           ? AGGREGATED_CELL_PIN_STYLE
           : pinStyleForCategory(event.properties.primary_category,
@@ -177,17 +201,16 @@ export function EventMap({ apiBaseUrl, apiKey, mapId, userId }: EventMapProps) {
           ...(isGridCell ? { map } : {}),
           position: { lat: latitude, lng: longitude },
           title: isGridCell
-            ? `${event.properties.count} events`
-            : event.properties.title,
+            ? `${event.properties.count} events${friendsLabel}`
+            : event.properties.title + friendsLabel,
         });
         marker.dataset[isGridCell ? "eventCell" : "eventMarker"] = event.id;
-        marker.append(
-          new markerLibrary!.PinElement({
+        const pin = new markerLibrary!.PinElement({
             ...pinStyle,
             glyph: isGridCell ? String(event.properties.count) : undefined,
             scale: isGridCell ? 1.08 : 0.92,
-          }),
-        );
+          });
+        marker.append(friendCount ? badgedPin(pin) : pin);
         if (!isGridCell) {
           markerListeners.push(marker.addListener("click", () => setSelectedEvent(event)));
           eventMarkers.push(marker);
@@ -195,7 +218,20 @@ export function EventMap({ apiBaseUrl, apiKey, mapId, userId }: EventMapProps) {
         markers.push(marker);
       }
       if (eventMarkers.length > 0 && Clusterer !== null) {
-        markerClusterer = new Clusterer({ map, markers: eventMarkers });
+        markerClusterer = new Clusterer({ map, markers: eventMarkers,
+          ...(badgesRef.current.size ? { renderer: {
+            render: ({ count, position, markers: grouped }) => {
+              const friendsEvents = (grouped ?? []).filter((item) =>
+                "dataset" in item && badgesRef.current.has(item.dataset.eventMarker ?? "")).length;
+              const marker = new markerLibrary!.AdvancedMarkerElement({ position,
+                title: `${count} events${friendsEvents ? ` — friends going to ${friendsEvents} events` : ""}`,
+                zIndex: 1000 + count });
+              const pin = new markerLibrary!.PinElement({ ...AGGREGATED_CELL_PIN_STYLE, glyph: String(count) });
+              marker.append(friendsEvents ? badgedPin(pin) : pin);
+              return marker;
+            },
+          } } : {}),
+        });
       }
       setEventCount(
         nextEvents.reduce(
@@ -217,6 +253,7 @@ export function EventMap({ apiBaseUrl, apiKey, mapId, userId }: EventMapProps) {
           zoom: Math.floor(map?.getZoom() ?? 13),
         };
         rememberViewport(apiBaseUrl, lastViewport);
+        setViewport(lastViewport);
       }
       requestController.abort();
       requestController = new AbortController();
@@ -401,6 +438,12 @@ export function EventMap({ apiBaseUrl, apiKey, mapId, userId }: EventMapProps) {
         onChange={changeFilters}
       />
       <div className="map-status" role="status">
+        {userId ? <div className="friends-layer-controls">
+          <label><input type="checkbox" checked={friendsEnabled}
+            onChange={(e) => setFriendsEnabled(e.target.checked)} />Friends going</label>
+          {friendsEnabled ? <button type="button" onClick={friends.refresh}>Refresh friends going</button> : null}
+          {friendsEnabled && friends.error ? <span>{friends.error}</span> : null}
+        </div> : null}
         {error ?? (eventCount === null
           ? "Loading Philadelphia events…"
           : `${eventCount} ${eventCount === 1 ? "event" : "events"}`)}
