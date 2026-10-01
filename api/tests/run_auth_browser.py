@@ -109,8 +109,10 @@ def main() -> None:
             "feedback": GoogleReplay(),
             "contacts": GoogleReplay(),
             "friend": GoogleReplay(),
+            "sharer": GoogleReplay(),
+            "guest": GoogleReplay(),
         }
-        for name in ("sender", "recipient", "feedback", "contacts", "friend"):
+        for name in ("sender", "recipient", "feedback", "contacts", "friend", "sharer", "guest"):
             identities[name].claims.update(
                 {
                     "sub": f"invite-{name}",
@@ -126,7 +128,9 @@ def main() -> None:
                 VALUES ('6b000000-0000-0000-0000-000000000001', 'Invite night', :starts, 'UTC',
                         ST_SetSRID(ST_MakePoint(-75.16,39.95),4326)::geography),
                        ('6d000000-0000-0000-0000-000000000001', 'Contact night', :starts, 'UTC',
-                        ST_SetSRID(ST_MakePoint(-75.17,39.96),4326)::geography)
+                        ST_SetSRID(ST_MakePoint(-75.17,39.96),4326)::geography),
+                       ('6d100000-0000-0000-0000-000000000001', 'Share night', :starts, 'UTC',
+                        ST_SetSRID(ST_MakePoint(-75.18,39.97),4326)::geography)
             """),
                 {"starts": browser_time + timedelta(days=1)},
             )
@@ -218,6 +222,7 @@ def main() -> None:
                     "invites.spec.ts",
                     "feedback.spec.ts",
                     "contacts.spec.ts",
+                    "invite-links.spec.ts",
                 ],
                 cwd=root / "web",
                 start_new_session=True,
@@ -231,9 +236,20 @@ def main() -> None:
                     )
                     == 1
                 )
-                assert connection.scalar(text("SELECT count(*) FROM invite")) == 2
+                assert connection.scalar(text("SELECT count(*) FROM invite")) == 3
                 assert connection.scalar(text("SELECT count(*) FROM sms_delivery")) == 0
-                assert connection.scalar(text("SELECT count(*) FROM attendance")) == 3
+                assert connection.scalar(text("SELECT count(*) FROM invite_share_link")) == 1
+                assert connection.scalar(text("SELECT count(*) FROM invite_share_acceptance")) == 1
+                assert (
+                    connection.scalar(
+                        text(
+                            "SELECT count(*) FROM invite "
+                            "WHERE channel='share_link' AND status='accepted'"
+                        )
+                    )
+                    == 1
+                )
+                assert connection.scalar(text("SELECT count(*) FROM attendance")) == 4
                 assert (
                     connection.scalar(
                         text(

@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -228,7 +229,11 @@ def test_cross_origin_logout_refresh_are_rejected(auth_client: AuthClient) -> No
     assert client.get("/api/me").status_code == 200
 
 
-def test_redirect_callback_clears_binding_and_handles_denial(auth_client: AuthClient) -> None:
+def test_redirect_callback_clears_binding_and_handles_denial(
+    auth_client: AuthClient, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # In-process Alembic setup disables existing loggers; production migrates separately.
+    monkeypatch.setattr(logging.getLogger("app.auth"), "disabled", False)
     client, _, _ = auth_client
     state = start(client)
     response = client.get(
@@ -247,6 +252,10 @@ def test_redirect_callback_clears_binding_and_handles_denial(auth_client: AuthCl
     )
     assert response.headers["location"] == CONFIG.web_url + "/?auth_error=1"
     assert attempt_cookie(CONFIG) not in client.cookies
+    messages = [record.getMessage() for record in caplog.records if record.name == "app.auth"]
+    assert messages == ["Google sign-in failed: Sign-in cancelled (status 400)"]
+    assert state not in messages[0]
+    assert "fixture-code" not in messages[0]
 
 
 def test_different_google_subject_cannot_take_existing_email(auth_client: AuthClient) -> None:

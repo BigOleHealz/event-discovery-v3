@@ -21,6 +21,8 @@ EXPECTED_TABLES = (
     "app_user",
     "contact",
     "invite",
+    "invite_share_link",
+    "invite_share_acceptance",
     "attendance",
     "event_feedback_request",
     "sms_delivery",

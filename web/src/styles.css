@@ -584,6 +584,27 @@ a {
   font-size: 0.85rem;
 }
 
+/* Google's pre-approved dark button; preserve the asset's proportions and colors. */
+.account-controls .google-sign-in {
+  border-radius: 4px;
+  text-decoration: none;
+}
+
+.google-sign-in img {
+  display: block;
+  width: 180px;
+  height: 40px;
+}
+
+.google-sign-in:hover {
+  box-shadow: 0 0 0 2px #8e918f;
+}
+
+.google-sign-in:focus-visible {
+  outline: 3px solid #4285f4;
+  outline-offset: 3px;
+}
+
 .account-controls button {
   padding: 0.4rem 0.7rem;
   border: 1px solid #c9c4b8;

@@ -15,6 +15,8 @@ from app.dedup_review import router as review_router
 from app.events import router as events_router
 from app.feedback import router as feedback_router
 from app.graph import graph_driver
+from app.invite_links import RedactInviteLinkAccessLogs
+from app.invite_links import router as invite_links_router
 from app.invites import router as invites_router
 from app.similar_events import router as similar_events_router
 
@@ -38,11 +40,12 @@ app = FastAPI(title="Event Discovery API", lifespan=lifespan)
 async def private_auth_responses(request: Request, call_next: RequestResponseEndpoint) -> Response:
     response = await call_next(request)
     if request.url.path == "/api/me" or request.url.path.startswith(
-        ("/api/auth/", "/api/invites", "/api/attendance", "/api/contacts")
+        ("/api/auth/", "/api/invites", "/api/invite-links", "/api/attendance", "/api/contacts")
     ):
         response.headers["Cache-Control"] = "no-store"
         response.headers["Referrer-Policy"] = "no-referrer"
     return response
+
 
 allowed_origins = [
     origin.strip() for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if origin.strip()
@@ -62,6 +65,7 @@ app.include_router(categories_router)
 app.include_router(review_router)
 app.include_router(auth_router)
 app.include_router(invites_router)
+app.include_router(invite_links_router)
 app.include_router(feedback_router)
 app.include_router(contacts_router)
 
@@ -69,3 +73,6 @@ app.include_router(contacts_router)
 @app.get("/health", response_model=HealthResponse, tags=["system"])
 def health() -> HealthResponse:
     return HealthResponse(status="ok")
+
+
+app.add_middleware(RedactInviteLinkAccessLogs)

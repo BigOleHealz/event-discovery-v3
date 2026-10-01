@@ -2,6 +2,7 @@ import { ContactsPanel } from "./ContactsPanel";
 import { useEffect, useState } from "react";
 import { InviteInbox } from "./InviteInbox";
 import { EventFeedback } from "./EventFeedback";
+import googleSignInDark from "./assets/google-sign-in-dark.png";
 
 interface User {
   id: string;
@@ -118,7 +119,9 @@ export function AccountControls({ apiBaseUrl, onUserChange }: {
             {busy ? "Signing out…" : "Sign out"}
           </button>
         </>
-      ) : <a href={`${base}/api/auth/google/start`}>Sign in with Google</a>}
+      ) : <a className="google-sign-in" href={`${base}/api/auth/google/start`}>
+        <img src={googleSignInDark} width="180" height="40" alt="Sign in with Google" />
+      </a>}
       {message && <p role="status">{message}</p>}
       {user && showContacts && <ContactsPanel key={user.id} apiBaseUrl={apiBaseUrl}
         onClose={() => setShowContacts(false)} />}

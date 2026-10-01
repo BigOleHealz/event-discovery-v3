@@ -59,18 +59,19 @@ Up to 20 addresses/contact selections can be submitted together. Recipients are 
 by user id, so an email and a contact for the same person create one in-app invitation.
 Unknown emails, unmatched contacts, and self-invites reject the entire batch. Contact ids
 belonging to another user return 404. Unmatched contacts remain in the address book and
-show **No matching account**; they cannot receive an invitation in this sub-phase.
+show **No matching account**. Use **Share invite** on the event, then choose the friend
+in your messaging app; no contact identity is bound to the link.
 Direct phone entry is no longer supported.
 
 All private reads are scoped to the current session; cookie-authenticated writes require
 the configured web origin. Responses use `no-store`, and the service worker does not
 cache contacts or invitations.
 
-## Deferred sharing and historical records
+## Sharing and historical records
 
 The app does not send SMS, call Twilio, or offer delivery retries. No Twilio credentials
-are needed. Unique share links with Google sign-in and explicit acceptance belong to
-**6d.1** and are not implemented here. Social shadow accounts and claim-on-signup merges
+are needed. [Share links](share-invites.md) with Google sign-in and explicit acceptance
+are available in **6d.1**. Social shadow accounts and claim-on-signup merges
 are deferred beyond v1; the provisional dedup-review administrator remains unchanged.
 
 Committed migration 0018 remains intact, including its historical `sms_delivery` table

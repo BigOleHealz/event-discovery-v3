@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 from typing import Annotated
 from uuid import UUID, uuid4
@@ -22,6 +23,17 @@ from app.oauth import (
 from app.sessions import Session, SessionStore, SignedCookieSessions
 
 router = APIRouter(tags=["auth"])
+logger = logging.getLogger(__name__)
+# Only these application-owned messages may enter logs; never provider responses.
+SIGNIN_FAILURE_REASONS = frozenset({
+    "Invalid sign-in attempt",
+    "Sign-in attempt expired or state did not match",
+    "Sign-in cancelled",
+    "Google sign-in is temporarily unavailable",
+    "Google sign-in was rejected",
+    "Google identity could not be verified",
+    "This email is already linked to an account",
+})
 Config = Annotated[AuthConfig, Depends(auth_config)]
 Clock = Annotated[datetime, Depends(utc_now)]
 Database = Annotated[Connection, Depends(get_connection)]
@@ -118,7 +130,7 @@ def save_google_user(connection: Connection, identity: GoogleIdentity, now: date
     except IntegrityError as error:
         connection.rollback()
         # Do not silently attach a new Google subject to another account by email.
-        # Claiming and merging shadow accounts belongs to 6d.1.
+        # Social shadow accounts and claim merging are deferred beyond v1.
         raise HTTPException(409, "This email is already linked to an account") from error
     return User.model_validate(dict(row))
 
@@ -191,7 +203,9 @@ def google_redirect(
             provider,
             store,
         )
-    except HTTPException:
+    except HTTPException as failure:
+        reason = failure.detail if failure.detail in SIGNIN_FAILURE_REASONS else "Unknown failure"
+        logger.warning("Google sign-in failed: %s (status %s)", reason, failure.status_code)
         # Do not echo Google errors, codes, or state into the browser's URL.
         response = RedirectResponse(config.web_url + "/?auth_error=1", status_code=303)
         clear_attempt(response, config)

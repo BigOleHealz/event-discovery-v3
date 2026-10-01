@@ -1,9 +1,10 @@
+import { SharedInviteLinks } from "./SharedInviteLinks";
 import { createPortal } from "react-dom";
 import { useEffect, useRef, useState } from "react";
 import { listInvites, respondToInvite, type Invite } from "./invites";
 
 export function InviteInbox({ apiBaseUrl, onClose }: { apiBaseUrl: string; onClose: () => void }) {
-  const [kind, setKind] = useState<"received" | "sent">("received");
+  const [kind, setKind] = useState<"received" | "sent" | "links">("received");
   const [offset, setOffset] = useState(0);
   const [version, setVersion] = useState(0);
   const [items, setItems] = useState<Invite[]>([]);
@@ -19,12 +20,14 @@ export function InviteInbox({ apiBaseUrl, onClose }: { apiBaseUrl: string; onClo
   }, []);
 
   useEffect(() => {
+    if (kind === "links") return;
     const controller = new AbortController();
+    const listKind = kind;
     async function load() {
       setLoading(true);
       setError("");
       try {
-        const invites = await listInvites(apiBaseUrl, kind, offset, controller.signal);
+        const invites = await listInvites(apiBaseUrl, listKind, offset, controller.signal);
         if (!controller.signal.aborted) setItems(invites);
       } catch (reason: unknown) {
         if (!controller.signal.aborted) {
@@ -59,14 +62,14 @@ export function InviteInbox({ apiBaseUrl, onClose }: { apiBaseUrl: string; onClo
     <button type="button" onClick={onClose} aria-label="Close invitations">Close</button>
     <h2>Invitations</h2>
     <nav aria-label="Invitation lists">
-      {(["received", "sent"] as const).map((tab) => <button type="button" key={tab}
-        aria-pressed={kind === tab} disabled={busy} onClick={() => { setKind(tab); setOffset(0); }}>
-        {tab === "received" ? "Received" : "Sent"}
+      {(["received", "sent", "links"] as const).map((tab) => <button type="button" key={tab}
+        aria-pressed={kind === tab} disabled={busy} onClick={() => { setKind(tab); setOffset(0); setError(""); }}>
+        {tab === "received" ? "Received" : tab === "sent" ? "Sent" : "Share links"}
       </button>)}
-      <button type="button" disabled={busy || loading} onClick={() => setVersion((value) => value + 1)}>Refresh</button>
+      {kind !== "links" && <button type="button" disabled={busy || loading} onClick={() => setVersion((value) => value + 1)}>Refresh</button>}
     </nav>
     {error && <p role="alert">{error}</p>}
-    {loading ? <p role="status">Loading invitations…</p> : items.length === 0 ? <p>No invitations here yet.</p> :
+    {kind === "links" ? <SharedInviteLinks apiBaseUrl={apiBaseUrl} /> : loading ? <p role="status">Loading invitations…</p> : items.length === 0 ? <p>No invitations here yet.</p> :
       <ul>{items.map((invite) => <li key={invite.id}>
         <h3>{invite.event_title}</h3>
         <time dateTime={invite.starts_at}>{new Date(invite.starts_at).toLocaleString()}</time>
@@ -81,9 +84,9 @@ export function InviteInbox({ apiBaseUrl, onClose }: { apiBaseUrl: string; onClo
             onClick={() => { void respond(invite.id, "decline"); }}>Decline</button>
         </div>}
       </li>)}</ul>}
-    <nav aria-label="Invitation pages">
+    {kind !== "links" && <nav aria-label="Invitation pages">
       <button type="button" disabled={loading || busy || offset === 0} onClick={() => setOffset((value) => Math.max(0, value - 20))}>Previous</button>
       <button type="button" disabled={loading || busy || items.length < 20} onClick={() => setOffset((value) => value + 20)}>Next</button>
-    </nav>
+    </nav>}
   </aside>, document.body);
 }

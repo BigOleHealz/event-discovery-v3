@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ShareInvite } from "./ShareInvite";
 import { ContactList } from "./ContactList";
 import { sendInvites } from "./invites";
 
@@ -53,5 +54,6 @@ export function InviteForm({ apiBaseUrl, eventId }: { apiBaseUrl: string; eventI
       <button type="submit" disabled={busy}>{busy ? "Sending…" : "Send invites"}</button>
     </form>
     {status && <p role="status">{status}</p>}
+    <ShareInvite apiBaseUrl={apiBaseUrl} eventId={eventId} />
   </section>;
 }

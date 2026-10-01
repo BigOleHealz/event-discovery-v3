@@ -28,6 +28,7 @@ export function ContactList({ apiBaseUrl, selected, onToggle, disabled = false }
   return <section className="contact-list" aria-label="Your contacts">
     <label>Search contacts<input type="search" value={search} disabled={disabled}
       onChange={(event) => { setSearch(event.target.value); setOffset(0); }} /></label>
+    {onToggle && <p>For friends without an account, use Share invite and choose them in your messaging app.</p>}
     {error && <p role="alert">{error}</p>}
     {loading ? <p role="status">Loading contacts…</p> : !error && <>
       {contacts.length === 0 && <p>No contacts found. Import contacts from your account menu.</p>}

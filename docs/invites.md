@@ -8,8 +8,8 @@ map cache. Signing out removes the inbox and event invite form.
 
 This sub-phase routes to existing, non-shadow Google accounts. Unknown emails reject the
 whole batch; no partial send occurs. Contact selection is available in 6d. Share links with
-signed-in acceptance belong to 6d.1, and map attendance badges to 6e. Provider-sent SMS and social shadow accounts
-are deferred beyond v1.
+signed-in acceptance are available in [6d.1](share-invites.md); map attendance badges belong
+to 6e. Provider-sent SMS and social shadow accounts are deferred beyond v1.
 
 ## API
 
